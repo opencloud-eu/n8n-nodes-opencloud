@@ -1,0 +1,120 @@
+# Dev stack: a pinned n8n with this node mounted in as a community node.
+#
+# Why this exists: running n8n on the host via @n8n/node-cli pulls n8n@latest
+# from npm on every start, which breaks whenever n8n ships a regression. This
+# compose file pins a known-working n8n version and mounts the built node so
+# host-side tsc changes hot-reload inside the container.
+#
+# Default (dev): only n8n. Bring your own OpenCloud and configure the credential.
+#   pnpm build          # one-off: build dist/ before first start
+#   docker compose up
+#   pnpm build:w        # tsc --watch — n8n picks up rebuilt JS via N8N_DEV_RELOAD
+#
+# CI / self-contained e2e: includes a co-located OpenCloud server.
+#   docker compose --profile ci up -d
+#   OPENCLOUD_URL=https://opencloud:9200 pnpm test:e2e
+# (n8n reaches OpenCloud over the compose network; the URL stored in the
+# credential needs to be reachable from inside the n8n container, hence the
+# service name rather than localhost. HTTPS is required — OpenCloud's bundled
+# IDP refuses to bootstrap with an http:// issuer URL — the self-signed cert is
+# accepted via skipTlsVerification on the credential.)
+#
+# Open: http://localhost:5678 — log in as admin@example.com / admin (see below).
+#
+# To pin n8n / OpenCloud versions:
+#   N8N_VERSION=2.16.1 OC_VERSION=6.0.0 docker compose up
+#
+# DEV-ONLY autoprovisioned owner. The bcrypt hash below is for the literal
+# password "admin" — never use this in any environment that's reachable from
+# outside your laptop. Generate your own hash with: htpasswd -nbB you yours
+
+services:
+  n8n:
+    image: n8nio/n8n:${N8N_VERSION:-2.17.0}
+    restart: unless-stopped
+    ports:
+      - '${N8N_PORT:-5678}:5678'
+    environment:
+      # Hot-reload — n8n watches the custom-nodes dir and re-imports the module
+      # on file change. Requires NODE_ENV != 'production' (default for the image).
+      N8N_DEV_RELOAD: 'true'
+      # Auto-provision the owner account so first launch skips the setup wizard.
+      # Login: admin@example.com / admin
+      N8N_INSTANCE_OWNER_MANAGED_BY_ENV: 'true'
+      N8N_INSTANCE_OWNER_EMAIL: admin@example.com
+      N8N_INSTANCE_OWNER_FIRST_NAME: Dev
+      N8N_INSTANCE_OWNER_LAST_NAME: User
+      # bcrypt hash of "admin" — DEV ONLY, never reuse this hash anywhere.
+      N8N_INSTANCE_OWNER_PASSWORD_HASH: $$2y$$05$$E8jQECl6MClrPcjdt6WZ7ObXt2rDqhEmxa63uEvCyY.TWruC7.8L.
+      # Generic timezone + locale niceties.
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-Europe/Berlin}
+      TZ: ${GENERIC_TIMEZONE:-Europe/Berlin}
+      # Quiet some noisy permission warnings on first start.
+      N8N_RUNNERS_ENABLED: 'true'
+      N8N_DIAGNOSTICS_ENABLED: 'false'
+    volumes:
+      # n8n state (DB, encryption key, executions). Survives `docker compose
+      # down`; nuked by `docker compose down -v`.
+      - n8n-data:/home/node/.n8n
+      # Mount under .n8n/nodes/ (community-packages dir), NOT .n8n/custom/.
+      # The custom/ loader hardcodes a "CUSTOM." type prefix; nodes/ uses the
+      # actual package name so the registered type is
+      # "@opencloud-eu/n8n-nodes-opencloud.openCloud" — matching what users
+      # who npm-install the package will see, so the example workflow JSON
+      # works in both dev and prod.
+      - ./dev/custom-package.json:/home/node/.n8n/nodes/package.json:ro
+      - ./package.json:/home/node/.n8n/nodes/node_modules/@opencloud-eu/n8n-nodes-opencloud/package.json:ro
+      - ./dist:/home/node/.n8n/nodes/node_modules/@opencloud-eu/n8n-nodes-opencloud/dist:ro
+
+  # OpenCloud — only started under the `ci` profile. Used by the Playwright
+  # e2e suite to give us a self-contained, deterministic backend. Same image
+  # the official opencloud-compose uses, with everything turned toward
+  # "minimal friction for tests": no password policy, no password requirement
+  # on public shares, demo users seeded.
+  opencloud:
+    profiles: ['ci']
+    image: opencloudeu/opencloud-rolling:${OC_VERSION:-6.0.0}
+    user: '1000:1000'
+    entrypoint: ['/bin/sh']
+    command: ['-c', 'opencloud init || true; opencloud server']
+    ports:
+      - '${OC_PORT:-9200}:9200'
+    environment:
+      # HTTPS is mandatory — OpenCloud's IDP rejects http:// as an issuer URL.
+      # Self-signed cert is auto-generated on first boot; the n8n credential
+      # uses skipTlsVerification=true to accept it.
+      OC_URL: https://opencloud:9200
+      OC_INSECURE: 'true'
+      PROXY_TLS: 'true'
+      # Basic auth is off by default; required for our node to reach the
+      # Graph + WebDAV endpoints with admin/admin (no OIDC dance in CI).
+      PROXY_ENABLE_BASIC_AUTH: 'true'
+      # Seed admin/admin (and demo users) so the e2e test can log in directly.
+      IDM_ADMIN_PASSWORD: admin
+      IDM_CREATE_DEMO_USERS: 'true'
+      # Disable policies that complicate test data — public-share password
+      # enforcement is what bit us when running against the real dev server.
+      OC_PASSWORD_POLICY_DISABLED: 'true'
+      OC_SHARING_PUBLIC_SHARE_MUST_HAVE_PASSWORD: 'false'
+      OC_SHARING_PUBLIC_WRITEABLE_SHARE_MUST_HAVE_PASSWORD: 'false'
+      OC_LOG_LEVEL: warn
+    volumes:
+      - opencloud-config:/etc/opencloud
+      - opencloud-data:/var/lib/opencloud
+    healthcheck:
+      # Hit the OIDC well-known config — unauthenticated, returns 200 only
+      # once IDP has finished bootstrapping. BusyBox wget here, so no GNU
+      # long options (--user= etc don't exist).
+      test: ['CMD-SHELL', 'wget -q --no-check-certificate --spider https://localhost:9200/.well-known/openid-configuration']
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 60s
+
+volumes:
+  n8n-data:
+    driver: local
+  opencloud-config:
+    driver: local
+  opencloud-data:
+    driver: local

@@ -1,0 +1,675 @@
+{
+  "name": "OpenCloud \u2014 End-to-end smoke test",
+  "meta": {
+    "description": "**Opt-in live integration test.** Exercises every OpenCloud node operation against a real OpenCloud server. The repo test suite uses mocked HTTP via nock and runs in CI; this workflow is for manual end-to-end verification.\n\nBefore running:\n  1. Create an OpenCloud credential in n8n (Settings \u2192 Credentials). For local Docker dev, the typical URL is https://host.docker.internal:9200.\n  2. Patch this workflow with your credential id:\n       ./examples/apply-credentials.sh <credential-id> > /tmp/smoke.json\n     and import /tmp/smoke.json. Or import as-is and pick the credential on every node manually.\n\nNo drive id needed \u2014 the Resolve-space step calls /graph/v1.0/me/drives via the Space:List operation and the Config Code node picks the personal drive automatically. Works against any backend.\n\nWhat it does (in order):\n  0. Cleanup any pre-existing /n8n-smoke from a prior run (idempotent re-runs)\n  1. Create /n8n-smoke folder\n  2. Generate test bytes\n  3. Upload as /n8n-smoke/hello.txt\n  4. List /n8n-smoke\n  5. Download /n8n-smoke/hello.txt\n  6. Create /n8n-smoke/archive subfolder\n  7. Copy hello.txt \u2192 archive/copy.txt\n  8. Move archive/copy.txt \u2192 archive/renamed.txt\n  9. Create a public share link for hello.txt\n 10. Delete hello.txt\n 11. Delete /n8n-smoke (cleanup)\n\nEach OpenCloud node has continueOnFail=true so a failure in one step does not break the rest. Step 12 (Verify results) aggregates errors and prints actionable detail (e.g. password-policy hints)."
+  },
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        200,
+        300
+      ],
+      "id": "trigger",
+      "name": "When clicking 'Execute Workflow'"
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "delete",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder }}"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        600,
+        300
+      ],
+      "id": "cleanup-first",
+      "name": "0. Cleanup any pre-existing /n8n-smoke",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "Idempotency guard: silently removes /n8n-smoke from a prior run so step 1's MKCOL doesn't fail with 405. A 404 here is expected on the first run.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "create",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "",
+        "name": "={{ $('Config').first().json.rootFolder.replace('/', '') }}"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        800,
+        300
+      ],
+      "id": "folder-create-root",
+      "name": "1. Create /n8n-smoke",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate a small text payload as binary so the upload node can use it.\nconst content = 'hello opencloud \u2014 n8n smoke test\\n' + new Date().toISOString() + '\\n';\nconst buf = Buffer.from(content, 'utf8');\nreturn [{\n\tjson: { generated: true, byteLength: buf.length },\n\tbinary: {\n\t\tdata: await this.helpers.prepareBinaryData(buf, 'hello.txt', 'text/plain'),\n\t},\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1000,
+        300
+      ],
+      "id": "make-bytes",
+      "name": "2. Make test bytes"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder }}",
+        "name": "={{ $('Config').first().json.fileName }}",
+        "binaryProperty": "data"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        300
+      ],
+      "id": "file-upload",
+      "name": "3. Upload hello.txt",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "list",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder }}"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        300
+      ],
+      "id": "folder-list",
+      "name": "4. List /n8n-smoke",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "download",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder + '/' + $('Config').first().json.fileName }}",
+        "binaryProperty": "data"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        300
+      ],
+      "id": "file-download",
+      "name": "5. Download hello.txt",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "create",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder }}",
+        "name": "archive"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1800,
+        300
+      ],
+      "id": "folder-create-archive",
+      "name": "6. Create archive subfolder",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "copy",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder + '/' + $('Config').first().json.fileName }}",
+        "destSpace": "",
+        "destParentPath": "={{ $('Config').first().json.rootFolder + '/archive' }}",
+        "destName": "copy.txt"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        300
+      ],
+      "id": "file-copy",
+      "name": "7. Copy \u2192 archive/copy.txt",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "move",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder + '/archive/copy.txt' }}",
+        "destSpace": "",
+        "destParentPath": "={{ $('Config').first().json.rootFolder + '/archive' }}",
+        "destName": "renamed.txt"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        2200,
+        300
+      ],
+      "id": "file-move",
+      "name": "8. Rename \u2192 renamed.txt",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "share",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder + '/' + $('Config').first().json.fileName }}",
+        "linkType": "view",
+        "password": "",
+        "expirationDateTime": ""
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        300
+      ],
+      "id": "file-share",
+      "name": "9. Create share link",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "If your server enforces a password for view links, set the Password field. The node will return a clear error pointing this out.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "delete",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder + '/' + $('Config').first().json.fileName }}"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        2600,
+        300
+      ],
+      "id": "file-delete",
+      "name": "10. Delete hello.txt",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "delete",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder }}"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        2800,
+        300
+      ],
+      "id": "folder-delete",
+      "name": "11. Delete /n8n-smoke (cleanup)",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregates each upstream OpenCloud step's output and reports pass/fail per step.\n// A step that returned `{ error: '...' }` (continueOnFail) is reported as failed,\n// otherwise pass. Surface the actual error message AND the server-detail\n// description (e.g. password complexity hints) for any step that failed.\nconst steps = [\n\t['0. Cleanup any pre-existing /n8n-smoke', true],\n\t['1. Create /n8n-smoke', false],\n\t['3. Upload hello.txt', false],\n\t['4. List /n8n-smoke', false],\n\t['5. Download hello.txt', false],\n\t['6. Create archive subfolder', false],\n\t['7. Copy \u2192 archive/copy.txt', false],\n\t['8. Rename \u2192 renamed.txt', false],\n\t['9. Create share link', false],\n\t['10. Delete hello.txt', false],\n\t['11. Delete /n8n-smoke (cleanup)', false],\n];\n\nconst results = [];\nlet failures = 0;\n\nfor (const [name, ignoreError] of steps) {\n\ttry {\n\t\tconst out = $(name).first()?.json ?? {};\n\t\tconst error = typeof out.error === 'string' ? out.error : null;\n\t\tconst description = typeof out.errorDescription === 'string' ? out.errorDescription : null;\n\t\tconst pass = !error;\n\t\tif (!pass && !ignoreError) failures++;\n\t\tresults.push({\n\t\t\tstep: name,\n\t\t\tpass,\n\t\t\t...(error ? { error } : {}),\n\t\t\t...(description ? { errorDescription: description } : {}),\n\t\t\t...(ignoreError && error ? { ignored: true } : {}),\n\t\t});\n\t} catch (e) {\n\t\tresults.push({ step: name, pass: false, error: 'no upstream output: ' + e.message });\n\t\tif (!ignoreError) failures++;\n\t}\n}\n\nreturn [{ json: { failures, totalCounted: steps.filter(([, ignore]) => !ignore).length, results } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3000,
+        300
+      ],
+      "id": "verify",
+      "name": "12. Verify results"
+    },
+    {
+      "parameters": {
+        "resource": "space",
+        "operation": "list"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        400,
+        300
+      ],
+      "id": "resolve-space",
+      "name": "Resolve space (list drives)",
+      "notesInFlow": true,
+      "notes": "Calls /graph/v1.0/me/drives via the OpenCloud node so we can pick the personal drive without hardcoding any drive id. Works against any backend.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pick the personal drive from the Space:List output, then expose the\n// fixed test inputs (root folder + test file name). All downstream nodes\n// reference these via $(\"Config\").first().json.\nconst drives = $input.all().map((it) => it.json);\nconst personal = drives.find((d) => d.driveType === \"personal\");\nif (!personal) {\n\tthrow new Error(\"No personal drive found for this user \u2014 drives: \" + JSON.stringify(drives.map((d) => d.driveType)));\n}\nreturn [{ json: { spaceId: personal.id, rootFolder: \"/n8n-smoke\", fileName: \"hello.txt\" } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        300
+      ],
+      "id": "config",
+      "name": "Config"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate a one-shot username for this run so re-runs don't collide.\nconst stamp = Date.now().toString(36);\nconst userName = `n8n-smoke-${stamp}`;\nreturn [{ json: { userName, displayName: 'n8n Smoke User', email: `${userName}@example.com`, password: 'Smoke!Test123' } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        600
+      ],
+      "id": "user-config",
+      "name": "User config (random)",
+      "notesInFlow": true,
+      "notes": "Generates a unique user payload per run."
+    },
+    {
+      "parameters": {
+        "resource": "user",
+        "operation": "create",
+        "userName": "={{ $('User config (random)').first().json.userName }}",
+        "displayName": "={{ $('User config (random)').first().json.displayName }}",
+        "email": "={{ $('User config (random)').first().json.email }}",
+        "password": "={{ $('User config (random)').first().json.password }}"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        800,
+        600
+      ],
+      "id": "user-create",
+      "name": "U1. Create user",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "user",
+        "operation": "get",
+        "userId": "={{ $('U1. Create user').first().json.id }}"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1000,
+        600
+      ],
+      "id": "user-get",
+      "name": "U2. Get user",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "user",
+        "operation": "update",
+        "userId": "={{ $('U1. Create user').first().json.id }}",
+        "updateFields": {
+          "displayName": "n8n Smoke User (renamed)"
+        }
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        600
+      ],
+      "id": "user-update",
+      "name": "U3. Rename user",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "user",
+        "operation": "delete",
+        "userId": "={{ $('U1. Create user').first().json.id }}"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        600
+      ],
+      "id": "user-delete",
+      "name": "U4. Delete user",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When clicking 'Execute Workflow'": {
+      "main": [
+        [
+          {
+            "node": "Resolve space (list drives)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "User config (random)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config": {
+      "main": [
+        [
+          {
+            "node": "0. Cleanup any pre-existing /n8n-smoke",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "0. Cleanup any pre-existing /n8n-smoke": {
+      "main": [
+        [
+          {
+            "node": "1. Create /n8n-smoke",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "1. Create /n8n-smoke": {
+      "main": [
+        [
+          {
+            "node": "2. Make test bytes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "2. Make test bytes": {
+      "main": [
+        [
+          {
+            "node": "3. Upload hello.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "3. Upload hello.txt": {
+      "main": [
+        [
+          {
+            "node": "4. List /n8n-smoke",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "4. List /n8n-smoke": {
+      "main": [
+        [
+          {
+            "node": "5. Download hello.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "5. Download hello.txt": {
+      "main": [
+        [
+          {
+            "node": "6. Create archive subfolder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "6. Create archive subfolder": {
+      "main": [
+        [
+          {
+            "node": "7. Copy \u2192 archive/copy.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "7. Copy \u2192 archive/copy.txt": {
+      "main": [
+        [
+          {
+            "node": "8. Rename \u2192 renamed.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8. Rename \u2192 renamed.txt": {
+      "main": [
+        [
+          {
+            "node": "9. Create share link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "9. Create share link": {
+      "main": [
+        [
+          {
+            "node": "10. Delete hello.txt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10. Delete hello.txt": {
+      "main": [
+        [
+          {
+            "node": "11. Delete /n8n-smoke (cleanup)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11. Delete /n8n-smoke (cleanup)": {
+      "main": [
+        [
+          {
+            "node": "12. Verify results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolve space (list drives)": {
+      "main": [
+        [
+          {
+            "node": "Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "User config (random)": {
+      "main": [
+        [
+          {
+            "node": "U1. Create user",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "U1. Create user": {
+      "main": [
+        [
+          {
+            "node": "U2. Get user",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "U2. Get user": {
+      "main": [
+        [
+          {
+            "node": "U3. Rename user",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "U3. Rename user": {
+      "main": [
+        [
+          {
+            "node": "U4. Delete user",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

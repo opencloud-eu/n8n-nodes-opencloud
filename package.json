@@ -1,0 +1,65 @@
+{
+	"name": "@opencloud-eu/n8n-nodes-opencloud",
+	"version": "0.1.0",
+	"description": "n8n community node for OpenCloud — file/folder/share operations against the OpenCloud API",
+	"license": "MIT",
+	"homepage": "https://github.com/opencloud-eu/n8n-nodes-opencloud",
+	"keywords": [
+		"n8n-community-node-package",
+		"n8n",
+		"opencloud",
+		"webdav",
+		"libregraph"
+	],
+	"author": {
+		"name": "OpenCloud",
+		"email": "info@opencloud.eu"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/opencloud-eu/n8n-nodes-opencloud.git"
+	},
+	"scripts": {
+		"build": "node dev/build.mjs",
+		"build:w": "node dev/build.mjs && tsc --watch --preserveWatchOutput",
+		"dev": "n8n-node dev",
+		"lint": "n8n-node lint",
+		"lint:fix": "n8n-node lint --fix",
+		"release": "n8n-node release",
+		"prepublishOnly": "n8n-node prerelease",
+		"test": "vitest run",
+		"test:watch": "vitest",
+		"test:e2e": "playwright test",
+		"typecheck": "tsc --noEmit"
+	},
+	"files": [
+		"dist"
+	],
+	"n8n": {
+		"n8nNodesApiVersion": 1,
+		"strict": true,
+		"credentials": [
+			"dist/credentials/OpenCloudApi.credentials.js"
+		],
+		"nodes": [
+			"dist/nodes/OpenCloud/OpenCloud.node.js"
+		]
+	},
+	"devDependencies": {
+		"@eslint/js": "^10.0.1",
+		"@n8n/node-cli": "*",
+		"@vitest/coverage-v8": "^2.1.0",
+		"axios": "^1.7.7",
+		"eslint": "9.39.4",
+		"@playwright/test": "^1.58.0",
+		"nock": "^13.5.4",
+		"prettier": "3.8.3",
+		"release-it": "20.0.0",
+		"typescript": "5.9.3",
+		"vitest": "^2.1.0",
+		"vitest-mock-extended": "^2.0.2"
+	},
+	"peerDependencies": {
+		"n8n-workflow": "*"
+	}
+}

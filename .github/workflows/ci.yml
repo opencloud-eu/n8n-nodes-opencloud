@@ -1,0 +1,130 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+# Cancel in-progress runs for the same branch/PR to avoid wasting CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+  e2e:
+    name: e2e (Playwright vs n8n + OpenCloud in compose)
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the node (dist/ is bind-mounted into n8n)
+        run: pnpm build
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Bring up n8n + OpenCloud
+        run: docker compose --profile ci up -d
+
+      - name: Wait for OpenCloud to be healthy
+        run: |
+          for i in $(seq 1 60); do
+            s=$(docker inspect --format='{{.State.Health.Status}}' n8n-nodes-opencloud-opencloud-1 2>/dev/null || true)
+            echo "[$i] opencloud health: $s"
+            [ "$s" = "healthy" ] && exit 0
+            sleep 5
+          done
+          echo "::error::OpenCloud failed to become healthy"
+          docker compose logs opencloud | tail -100
+          exit 1
+
+      - name: Wait for n8n to be ready
+        run: |
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:5678/signin || true)
+            echo "[$i] n8n /signin → $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 2
+          done
+          echo "::error::n8n failed to come up"
+          docker compose logs n8n | tail -100
+          exit 1
+
+      - name: Run e2e
+        env:
+          # n8n reaches OpenCloud over the compose network.
+          OPENCLOUD_URL: https://opencloud:9200
+          OPENCLOUD_USER: admin
+          OPENCLOUD_PASSWORD: admin
+        run: pnpm test:e2e
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          echo "=== n8n logs ==="
+          docker compose logs n8n | tail -200
+          echo "=== opencloud logs ==="
+          docker compose logs opencloud | tail -200
+
+      - name: Upload Playwright artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 14
+
+      - name: Tear down compose
+        if: always()
+        run: docker compose --profile ci down -v

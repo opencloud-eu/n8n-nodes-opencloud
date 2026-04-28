@@ -1,0 +1,9 @@
+{
+	"name": "n8n-custom-dev-bundle",
+	"version": "0.0.0",
+	"private": true,
+	"description": "Mounted at /home/node/.n8n/custom/package.json by docker-compose.yml so n8n's directory loader walks node_modules/ and discovers our node.",
+	"dependencies": {
+		"@opencloud-eu/n8n-nodes-opencloud": "*"
+	}
+}
