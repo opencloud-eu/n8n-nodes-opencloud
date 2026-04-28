@@ -6,6 +6,40 @@ import type {
 	IHttpRequestOptions,
 	ILoadOptionsFunctions,
 } from 'n8n-workflow';
+import { NodeOperationError } from 'n8n-workflow';
+
+// Syscall / network error codes that mean "the request never got an HTTP
+// reply" — DNS, refused, timeout, etc. We catch these specifically so the
+// user gets a clear "server unreachable" message instead of n8n's generic
+// stock string ("The connection cannot be established, this usually
+// occurs due to an incorrect host (domain) value").
+const NETWORK_ERROR_CODES: ReadonlySet<string> = new Set([
+	'ENOTFOUND',
+	'ECONNREFUSED',
+	'ETIMEDOUT',
+	'EAI_AGAIN',
+	'ECONNRESET',
+	'EHOSTUNREACH',
+	'ENETUNREACH',
+	'EPROTO',
+	'CERT_HAS_EXPIRED',
+	'DEPTH_ZERO_SELF_SIGNED_CERT',
+	'SELF_SIGNED_CERT_IN_CHAIN',
+	'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+]);
+
+function extractErrorCode(error: unknown): string {
+	const e = error as {
+		httpCode?: unknown;
+		code?: unknown;
+		cause?: { code?: unknown; httpCode?: unknown };
+	};
+	const candidates = [e.httpCode, e.code, e.cause?.code, e.cause?.httpCode];
+	for (const c of candidates) {
+		if (typeof c === 'string' && c.length > 0) return c;
+	}
+	return '';
+}
 
 // Minimal shapes for the Libre Graph responses we read. Extend these
 // interfaces when a new operation needs more fields.
@@ -67,9 +101,31 @@ export async function openCloudApiRequest<T = unknown>(
 		options.encoding = 'arraybuffer';
 	}
 
-	return (await this.helpers.httpRequestWithAuthentication.call(
-		this,
-		'openCloudApi',
-		options,
-	)) as T;
+	try {
+		return (await this.helpers.httpRequestWithAuthentication.call(
+			this,
+			'openCloudApi',
+			options,
+		)) as T;
+	} catch (error) {
+		const code = extractErrorCode(error);
+		if (NETWORK_ERROR_CODES.has(code)) {
+			// Re-throw as NodeOperationError on purpose: NodeApiError's constructor
+			// rewrites the surface message via httpCode → COMMON_ERRORS mappings,
+			// which would clobber the URL we want users to see. NodeOperationError
+			// passes the message through untouched.
+			const credentials = await this.getCredentials<{ serverUrl: string }>('openCloudApi');
+			throw new NodeOperationError(
+				this.getNode(),
+				`Cannot reach OpenCloud server at ${credentials.serverUrl} (${code})`,
+				{
+					description:
+						'The request never received a reply from the server. ' +
+						'Verify the credential\'s "Server URL" is correct, that the OpenCloud server is running, ' +
+						'and that n8n can reach it from inside its container (e.g. host.docker.internal for a host-running server).',
+				},
+			);
+		}
+		throw error;
+	}
 }
