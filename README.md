@@ -52,7 +52,7 @@ mkdir -p ~/.n8n/custom
 ln -s "$(pwd)" ~/.n8n/custom/n8n-nodes-opencloud
 
 #   b) or pack and install via the n8n UI
-npm pack
+pnpm pack
 # Settings → Community Nodes → Install → upload the .tgz
 ```
 
