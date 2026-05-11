@@ -581,8 +581,8 @@ export class OpenCloud implements INodeType {
 						operation: ['create'],
 					},
 				},
-				placeholder: 'New folder name',
-				description: 'Name of the new folder',
+				placeholder: 'Reports/2024',
+				description: 'Name of the folder to create. Use forward slashes to create nested folders in one step (e.g. "Reports/2024" creates Reports and, inside it, 2024). Each missing level is created automatically.',
 			},
 			{
 				displayName: 'Link Type',
@@ -811,17 +811,33 @@ export class OpenCloud implements INodeType {
 					}
 
 					const credentials = await this.getCredentials<{ serverUrl: string }>('openCloudApi');
-					const newFolderPath = '/' + [...splitPath(parentPath), name].join('/');
-					const url = spaceWebDavUrl(credentials.serverUrl, driveId, newFolderPath);
+					const nameSegments = splitPath(name);
+					const parentSegments = splitPath(parentPath);
+					const finalPath = '/' + [...parentSegments, ...nameSegments].join('/');
+					const finalName = nameSegments[nameSegments.length - 1];
 
-					await openCloudApiRequest.call(
-						this,
-						'MKCOL' as IHttpRequestMethods,
-						url,
-						'',
-						{},
-						false,
-					);
+					for (let j = 0; j < nameSegments.length; j++) {
+						const segPath = '/' + [...parentSegments, ...nameSegments.slice(0, j + 1)].join('/');
+						const url = spaceWebDavUrl(credentials.serverUrl, driveId, segPath);
+						try {
+							await openCloudApiRequest.call(
+								this,
+								'MKCOL' as IHttpRequestMethods,
+								url,
+								'',
+								{},
+								false,
+							);
+						} catch (error) {
+							const httpCode = String(
+								(error as { httpCode?: unknown }).httpCode ??
+								(error as { statusCode?: unknown }).statusCode ??
+								'',
+							);
+							if (httpCode === '405') continue;
+							throw error;
+						}
+					}
 
 					returnData.push({
 						json: {
@@ -829,8 +845,8 @@ export class OpenCloud implements INodeType {
 							resource: 'folder',
 							operation: 'create',
 							spaceId: driveId,
-							path: newFolderPath,
-							name,
+							path: finalPath,
+							name: finalName,
 						},
 						pairedItem: { item: i },
 					});
@@ -966,10 +982,12 @@ export class OpenCloud implements INodeType {
 							false,
 						);
 					} catch (error) {
-						const httpCode =
-							(error as { httpCode?: number }).httpCode ??
-							(error as { statusCode?: number }).statusCode;
-						if (operation === 'move' && httpCode === 502) {
+						const httpCode = String(
+							(error as { httpCode?: unknown }).httpCode ??
+							(error as { statusCode?: unknown }).statusCode ??
+							'',
+						);
+						if (operation === 'move' && httpCode === '502') {
 							throw new NodeApiError(this.getNode(), error as JsonObject, {
 								message: 'Cross-storage move not supported',
 								description:
