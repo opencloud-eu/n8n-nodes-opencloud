@@ -66,6 +66,23 @@ export interface OpenCloudCollection<T> {
 export type DrivesResponse = OpenCloudCollection<Drive>;
 export type DriveItemsResponse = OpenCloudCollection<DriveItem>;
 
+// Unified role definition exposed by /roleManagement/permissions/roleDefinitions.
+// Each role bundles a set of allowed resource actions; the `condition` string
+// on a rolePermission carries the resource-type predicate the server uses to
+// decide whether a role is applicable to a given driveItem (file / folder /
+// space root). See opencloud-eu/web for the same client-side filter pattern.
+export interface UnifiedRolePermission {
+	allowedResourceActions?: string[];
+	condition?: string;
+}
+
+export interface RoleDefinition {
+	id?: string;
+	displayName?: string;
+	description?: string;
+	rolePermissions?: UnifiedRolePermission[];
+}
+
 /**
  * Wrapper around `httpRequestWithAuthentication` that resolves the OpenCloud
  * server URL from credentials when called with a path, or accepts an absolute
