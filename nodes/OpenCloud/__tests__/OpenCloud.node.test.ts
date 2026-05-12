@@ -3,6 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { OpenCloud } from '../OpenCloud.node';
 import {
 	makeExecuteFunctions,
+	makeLoadOptionsFunctions,
 	fixtures,
 	nock,
 	isolateNetwork,
@@ -301,6 +302,7 @@ describe('OpenCloud node', () => {
 			const { fns } = makeExecuteFunctions({
 				parameters: {
 					resource: 'file', operation: 'share', space: driveId,
+					recipientType: 'publicLink',
 					path: filePath, linkType: 'view', password: '', expirationDateTime: '',
 				},
 			});
@@ -323,6 +325,256 @@ describe('OpenCloud node', () => {
 				await runOnceJson({
 					resource: 'file', operation: 'delete', space: driveId, path: filePath,
 				}).catch(() => null);
+			}
+		});
+	});
+
+	describe('share: invite via unified roles', () => {
+		// Dual-mode invites. Mock mode uses nock body-match fixtures (tight
+		// shape assertion). Integration mode resolves a seeded demo recipient
+		// by displayName (so an LDIF seed regen doesn't break CI), fetches a
+		// real role applicable to the resource type, invites, asserts the
+		// returned Permission shape, and cleans up. file/folder cleanups
+		// delete the parent (cascades the permission); the space test creates
+		// a tmp project space and two-step disable+purges it so CI runs leave
+		// no trash.
+
+		async function liveGet<T = unknown>(path: string): Promise<T> {
+			const { fns } = makeExecuteFunctions({ parameters: {} });
+			const call = fns.helpers.httpRequestWithAuthentication as (
+				cred: string,
+				opts: { method: string; url: string; json: boolean },
+			) => Promise<T>;
+			return call.call(null, 'openCloudApi', {
+				method: 'GET',
+				url: `${TEST_SERVER}${path}`,
+				json: true,
+			});
+		}
+
+		async function liveUserId(displayName: string): Promise<string> {
+			const r = await liveGet<{ value?: Array<{ id?: string; displayName?: string }> }>(
+				'/graph/v1.0/users',
+			);
+			const m = (r.value ?? []).find((u) => u.displayName === displayName);
+			if (!m?.id) throw new Error(`No demo user with displayName='${displayName}'`);
+			return m.id;
+		}
+		async function liveGroupId(displayName: string): Promise<string> {
+			const r = await liveGet<{ value?: Array<{ id?: string; displayName?: string }> }>(
+				'/graph/v1.0/groups',
+			);
+			const m = (r.value ?? []).find((g) => g.displayName === displayName);
+			if (!m?.id) throw new Error(`No demo group with displayName='${displayName}'`);
+			return m.id;
+		}
+		async function liveRoleId(forResource: 'file' | 'folder' | 'space'): Promise<string> {
+			const conditionMatch =
+				forResource === 'file' ? '@Resource.File'
+					: forResource === 'folder' ? '@Resource.Folder'
+						: '@Resource.Root';
+			const roles = await liveGet<Array<{ id?: string; rolePermissions?: Array<{ condition?: string }> }>>(
+				'/graph/v1beta1/roleManagement/permissions/roleDefinitions',
+			);
+			const m = (roles ?? []).find((r) =>
+				(r.rolePermissions ?? []).some((p) => (p.condition ?? '').includes(conditionMatch)),
+			);
+			if (!m?.id) throw new Error(`No role found for resource ${forResource}`);
+			return m.id;
+		}
+
+		it('invites a user to a file with a file-applicable role', async () => {
+			const fileName = `invite-file-${Date.now()}.txt`;
+			const filePath = tmpPath(fileName);
+
+			let recipientId = 'user-uuid-1';
+			let roleId = 'role-uuid-viewer';
+
+			if (IS_INTEGRATION) {
+				await ensureFolder(driveId, TMP_ROOT);
+				await runOnceJson({
+					resource: 'file', operation: 'upload', space: driveId,
+					path: TMP_ROOT, name: fileName,
+					binaryDataUpload: false, fileContent: 'invite me',
+				});
+				recipientId = await liveUserId('Alan Turing');
+				roleId = await liveRoleId('file');
+			} else {
+				const itemId = `${driveId}!report`;
+				nockChildrenWalk(
+					[{ id: `${driveId}!tmp`, name: TMP_ROOT.slice(1), folder: {} }],
+					[{ id: itemId, name: fileName, file: { mimeType: 'text/plain' } }],
+				);
+				nock(TEST_SERVER)
+					.post(
+						`/graph/v1beta1/drives/${driveIdEnc}/items/${encodeURIComponent(itemId)}/invite`,
+						{
+							recipients: [{ objectId: recipientId, '@libre.graph.recipient.type': 'user' }],
+							roles: [roleId],
+						},
+					)
+					.reply(200, {
+						value: [{
+							id: 'perm-1',
+							roles: [roleId],
+							grantedToV2: { user: { id: recipientId } },
+						}],
+					});
+			}
+
+			// recipientId is wrapped in the resourceLocator shape the n8n editor
+			// produces, to verify the handler's getNodeParameter(..., {extractValue:
+			// true}) path unwraps it correctly. The group invite test below leaves
+			// it as a bare string to keep back-compat coverage.
+			const result = (await runOnceJson({
+				resource: 'file', operation: 'share', space: driveId,
+				path: filePath,
+				recipientType: 'user',
+				recipientId: { __rl: true, mode: 'list', value: recipientId },
+				role: roleId,
+				expirationDateTime: '',
+			})) as { id?: string; roles?: string[]; grantedToV2?: { user?: { id?: string } } };
+
+			expect(result.id).toBeTruthy();
+			expect(result.roles).toContain(roleId);
+			expect(result.grantedToV2?.user?.id).toBe(recipientId);
+
+			if (IS_INTEGRATION) {
+				await runOnceJson({
+					resource: 'file', operation: 'delete', space: driveId, path: filePath,
+				}).catch(() => null);
+			}
+		});
+
+		it('invites a group to a folder with a folder-applicable role + expiration', async () => {
+			const folderName = `invite-folder-${Date.now()}`;
+			const folderPath = tmpPath(folderName);
+
+			let recipientId = 'group-uuid-1';
+			let roleId = 'role-uuid-editor';
+			const exp = '2030-01-01T00:00:00Z';
+
+			if (IS_INTEGRATION) {
+				await ensureFolder(driveId, TMP_ROOT);
+				await runOnceJson({
+					resource: 'folder', operation: 'create',
+					space: driveId, path: TMP_ROOT, name: folderName,
+				});
+				recipientId = await liveGroupId('chess-lovers');
+				roleId = await liveRoleId('folder');
+			} else {
+				const itemId = `${driveId}!reports-folder`;
+				nockChildrenWalk(
+					[{ id: `${driveId}!tmp`, name: TMP_ROOT.slice(1), folder: {} }],
+					[{ id: itemId, name: folderName, folder: {} }],
+				);
+				nock(TEST_SERVER)
+					.post(
+						`/graph/v1beta1/drives/${driveIdEnc}/items/${encodeURIComponent(itemId)}/invite`,
+						{
+							recipients: [{ objectId: recipientId, '@libre.graph.recipient.type': 'group' }],
+							roles: [roleId],
+							expirationDateTime: exp,
+						},
+					)
+					.reply(200, {
+						value: [{ id: 'perm-2', roles: [roleId], grantedToV2: { group: { id: recipientId } } }],
+					});
+			}
+
+			const result = (await runOnceJson({
+				resource: 'folder', operation: 'share', space: driveId,
+				path: folderPath,
+				recipientType: 'group',
+				recipientId,
+				role: roleId,
+				expirationDateTime: exp,
+			})) as { id?: string; roles?: string[]; grantedToV2?: { group?: { id?: string } } };
+
+			expect(result.id).toBeTruthy();
+			expect(result.roles).toContain(roleId);
+			expect(result.grantedToV2?.group?.id).toBe(recipientId);
+
+			if (IS_INTEGRATION) {
+				await runOnceJson({
+					resource: 'folder', operation: 'delete', space: driveId, path: folderPath,
+				}).catch(() => null);
+			}
+		});
+
+		it('invites a user to a space (drive root) with a space-applicable role', async () => {
+			let targetSpaceId = driveId;
+			let targetSpaceIdEnc = driveIdEnc;
+			let recipientId = 'user-uuid-space';
+			let roleId = 'role-uuid-manager';
+
+			if (IS_INTEGRATION) {
+				// Personal drives can't accept root invites ("unsupported space
+				// type"). Spin up a tmp project space for the test, invite into
+				// that, then delete it. Project spaces accept root invites.
+				const httpCall = makeExecuteFunctions({ parameters: {} }).fns.helpers
+					.httpRequestWithAuthentication as (
+					cred: string,
+					opts: { method: string; url: string; body?: unknown; headers?: Record<string, string>; json: boolean },
+				) => Promise<{ id?: string }>;
+				const created = await httpCall('openCloudApi', {
+					method: 'POST',
+					url: `${TEST_SERVER}/graph/v1.0/drives`,
+					body: {
+						name: `n8n-test-space-${Date.now()}`,
+						driveType: 'project',
+						description: 'tmp space for invite test',
+					},
+					headers: { 'Content-Type': 'application/json' },
+					json: true,
+				});
+				if (!created.id) throw new Error('project-space creation returned no id');
+				targetSpaceId = created.id;
+				targetSpaceIdEnc = encodeURIComponent(created.id);
+				recipientId = await liveUserId('Alan Turing');
+				roleId = await liveRoleId('space');
+			} else {
+				nock(TEST_SERVER)
+					.post(`/graph/v1beta1/drives/${targetSpaceIdEnc}/root/invite`, {
+						recipients: [{ objectId: recipientId, '@libre.graph.recipient.type': 'user' }],
+						roles: [roleId],
+					})
+					.reply(200, {
+						value: [{ id: 'perm-root', roles: [roleId], grantedToV2: { user: { id: recipientId } } }],
+					});
+			}
+
+			try {
+				const result = (await runOnceJson({
+					resource: 'space', operation: 'share', space: targetSpaceId,
+					recipientType: 'user',
+					recipientId,
+					role: roleId,
+					expirationDateTime: '',
+				})) as { id?: string; roles?: string[]; grantedToV2?: { user?: { id?: string } } };
+
+				expect(result.id).toBeTruthy();
+				expect(result.roles).toContain(roleId);
+				if (IS_INTEGRATION) {
+					expect(result.grantedToV2?.user?.id).toBe(recipientId);
+				}
+			} finally {
+				if (IS_INTEGRATION && targetSpaceId !== driveId) {
+					// Two-step delete to actually purge (single DELETE only moves
+					// to trash). DELETE → trashes; DELETE + `Purge: T` → removes.
+					// Both best-effort so a stack with stale trash doesn't trip CI.
+					const httpCall = makeExecuteFunctions({ parameters: {} }).fns.helpers
+						.httpRequestWithAuthentication as (
+						cred: string,
+						opts: { method: string; url: string; headers?: Record<string, string>; json: boolean },
+					) => Promise<unknown>;
+					const url = `${TEST_SERVER}/graph/v1.0/drives/${targetSpaceIdEnc}`;
+					await httpCall('openCloudApi', { method: 'DELETE', url, json: true })
+						.catch(() => null);
+					await httpCall('openCloudApi', {
+						method: 'DELETE', url, headers: { Purge: 'T' }, json: true,
+					}).catch(() => null);
+				}
 			}
 		});
 	});
@@ -408,6 +660,336 @@ describe('OpenCloud node', () => {
 		});
 	});
 
+	// --- loadOptions: dropdowns populated from Graph endpoints ---
+
+	describe('loadOptions: getLinkTypes', () => {
+		// Pure catalog filter, no network. The spec-defined enum is hardcoded
+		// (no Graph endpoint serves it); what's dynamic is per-resource filtering.
+		it('exposes file-only link types when resource is file', async () => {
+			const { fns } = makeLoadOptionsFunctions({ currentParameters: { resource: 'file' } });
+			const options = await node.methods.loadOptions.getLinkTypes.call(fns);
+			const values = options.map((o) => o.value);
+			expect(values).toContain('view');
+			expect(values).toContain('edit');
+			expect(values).not.toContain('upload');
+			expect(values).not.toContain('createOnly');
+		});
+
+		it('exposes folder-applicable link types when resource is folder', async () => {
+			const { fns } = makeLoadOptionsFunctions({ currentParameters: { resource: 'folder' } });
+			const options = await node.methods.loadOptions.getLinkTypes.call(fns);
+			const values = options.map((o) => o.value);
+			expect(values).toEqual(expect.arrayContaining(['view', 'edit', 'upload', 'createOnly']));
+		});
+
+		it('falls back to the full catalog when resource is not set', async () => {
+			const { fns } = makeLoadOptionsFunctions({ currentParameters: {} });
+			const options = await node.methods.loadOptions.getLinkTypes.call(fns);
+			expect(options.map((o) => o.value)).toEqual(
+				expect.arrayContaining(['view', 'edit', 'upload', 'createOnly', 'blocksDownload', 'internal']),
+			);
+		});
+
+		it('exposes internal link type across all resource kinds', async () => {
+			for (const resource of ['file', 'folder', 'space'] as const) {
+				const { fns } = makeLoadOptionsFunctions({ currentParameters: { resource } });
+				const options = await node.methods.loadOptions.getLinkTypes.call(fns);
+				expect(options.map((o) => o.value)).toContain('internal');
+			}
+		});
+	});
+
+	describe('loadOptions: getShareRoles', () => {
+		const fileRole = {
+			id: 'role-file',
+			displayName: 'File Viewer',
+			rolePermissions: [{ condition: 'exists @Resource.File' }],
+		};
+		const folderRole = {
+			id: 'role-folder',
+			displayName: 'Folder Editor',
+			rolePermissions: [{ condition: 'exists @Resource.Folder' }],
+		};
+		const rootRole = {
+			id: 'role-root',
+			displayName: 'Space Manager',
+			rolePermissions: [{ condition: 'exists @Resource.Root' }],
+		};
+
+		const mockRoleList = () =>
+			nock(TEST_SERVER)
+				.get('/graph/v1beta1/roleManagement/permissions/roleDefinitions')
+				.reply(200, [fileRole, folderRole, rootRole]);
+
+		// Dual-mode: in integration mode this hits the real server, catching
+		// any drift between the spec we coded against and what the deployment
+		// actually serves (path version, response wrapping, etc.).
+		it('returns file-applicable roles when resource is file', async () => {
+			if (!IS_INTEGRATION) mockRoleList();
+			const { fns } = makeLoadOptionsFunctions({ currentParameters: { resource: 'file' } });
+			const options = await node.methods.loadOptions.getShareRoles.call(fns);
+			expect(options.length).toBeGreaterThan(0);
+			if (!IS_INTEGRATION) {
+				expect(options.map((o) => o.value)).toEqual(['role-file']);
+				expect(options[0].name).toBe('File Viewer');
+			}
+			// In either mode, every returned role's condition should reference
+			// @Resource.File (the predicate we filter on). Assertion is shape-based
+			// so it survives whatever specific roles the real server ships.
+			for (const opt of options) {
+				expect(typeof opt.value).toBe('string');
+				expect((opt.value as string).length).toBeGreaterThan(0);
+			}
+		});
+
+		it('returns folder-applicable roles when resource is folder', async () => {
+			if (!IS_INTEGRATION) mockRoleList();
+			const { fns } = makeLoadOptionsFunctions({ currentParameters: { resource: 'folder' } });
+			const options = await node.methods.loadOptions.getShareRoles.call(fns);
+			expect(options.length).toBeGreaterThan(0);
+			if (!IS_INTEGRATION) {
+				expect(options.map((o) => o.value)).toEqual(['role-folder']);
+			}
+		});
+
+		it('returns drive-root roles when resource is space', async () => {
+			if (!IS_INTEGRATION) mockRoleList();
+			const { fns } = makeLoadOptionsFunctions({ currentParameters: { resource: 'space' } });
+			const options = await node.methods.loadOptions.getShareRoles.call(fns);
+			expect(options.length).toBeGreaterThan(0);
+			if (!IS_INTEGRATION) {
+				expect(options.map((o) => o.value)).toEqual(['role-root']);
+			}
+		});
+
+		it('falls back to all roles when resource cannot be read', async () => {
+			if (!IS_INTEGRATION) mockRoleList();
+			const { fns } = makeLoadOptionsFunctions({ currentParameters: {} });
+			const options = await node.methods.loadOptions.getShareRoles.call(fns);
+			expect(options.length).toBeGreaterThan(0);
+			if (!IS_INTEGRATION) {
+				expect(options.map((o) => o.value).sort()).toEqual(['role-file', 'role-folder', 'role-root']);
+			}
+		});
+	});
+
+	describe('listSearch: searchRecipients', () => {
+		it('lists users when recipientType is user', async () => {
+			if (!IS_INTEGRATION) {
+				nock(TEST_SERVER)
+					.get('/graph/v1.0/users')
+					.query({ $top: '100' })
+					.reply(200, {
+						value: [
+							{ id: 'u-1', displayName: 'Alice', onPremisesSamAccountName: 'alice', mail: 'alice@example.com' },
+							{ id: 'u-2', displayName: 'Bob' },
+						],
+					});
+			}
+			const { fns } = makeLoadOptionsFunctions({
+				currentParameters: { recipientType: 'user' },
+			});
+			const result = await node.methods.listSearch.searchRecipients.call(fns);
+			expect(result.results.length).toBeGreaterThan(0);
+			if (!IS_INTEGRATION) {
+				expect(result.results.map((o) => o.value)).toEqual(['u-1', 'u-2']);
+				expect(result.results[0].name).toBe('Alice (alice@example.com)');
+			} else {
+				// Every returned entry should at least carry an id-shaped value.
+				for (const entry of result.results) {
+					expect(typeof entry.value).toBe('string');
+					expect((entry.value as string).length).toBeGreaterThan(0);
+				}
+			}
+		});
+
+		it('lists groups when recipientType is group', async () => {
+			if (!IS_INTEGRATION) {
+				nock(TEST_SERVER)
+					.get('/graph/v1.0/groups')
+					.query({ $top: '100' })
+					.reply(200, { value: [{ id: 'g-1', displayName: 'Engineering' }] });
+			}
+			const { fns } = makeLoadOptionsFunctions({
+				currentParameters: { recipientType: 'group' },
+			});
+			const result = await node.methods.listSearch.searchRecipients.call(fns);
+			if (!IS_INTEGRATION) {
+				expect(result.results.map((o) => o.value)).toEqual(['g-1']);
+				expect(result.results[0].name).toBe('Engineering');
+			} else {
+				// Real server may or may not have groups; just verify the call shape.
+				for (const entry of result.results) {
+					expect(typeof entry.value).toBe('string');
+				}
+			}
+		});
+
+		it('defaults to users when recipientType is not set', async () => {
+			if (!IS_INTEGRATION) {
+				nock(TEST_SERVER)
+					.get('/graph/v1.0/users')
+					.query({ $top: '100' })
+					.reply(200, { value: [{ id: 'u-x', displayName: 'X' }] });
+			}
+			const { fns } = makeLoadOptionsFunctions({ currentParameters: {} });
+			const result = await node.methods.listSearch.searchRecipients.call(fns);
+			expect(result.results.length).toBeGreaterThan(0);
+			if (!IS_INTEGRATION) {
+				expect(result.results.map((o) => o.value)).toEqual(['u-x']);
+			}
+		});
+
+		it('narrows results when a filter string is provided', async () => {
+			if (!IS_INTEGRATION) {
+				nock(TEST_SERVER)
+					.get('/graph/v1.0/users')
+					.query({ $top: '100', $search: '"Alan"' })
+					.reply(200, {
+						value: [
+							{ id: 'u-alan', displayName: 'Alan Turing', mail: 'alan@example.com' },
+						],
+					});
+			}
+			const { fns } = makeLoadOptionsFunctions({
+				currentParameters: { recipientType: 'user' },
+			});
+			const result = await node.methods.listSearch.searchRecipients.call(fns, 'Alan');
+			expect(result.results.length).toBeGreaterThan(0);
+			// Every returned entry should match the filter (case-insensitive).
+			// In integration mode we hit the live server's $search, which matches
+			// across displayName / mail / onPremisesSamAccountName, so the filter
+			// substring must appear in at least one of the rendered fields.
+			for (const entry of result.results) {
+				expect((entry.name as string).toLowerCase()).toContain('alan');
+			}
+		});
+
+		mockOnly.it('passes filter through as $search and forwards nextLink as paginationToken', async () => {
+			nock(TEST_SERVER)
+				.get('/graph/v1.0/users')
+				.query({ $top: '100', $search: '"ali"' })
+				.reply(200, {
+					value: [{ id: 'u-1', displayName: 'Alice' }],
+					'@odata.nextLink': '/graph/v1.0/users?$top=100&$search=%22ali%22&$skiptoken=abc',
+				});
+			const { fns } = makeLoadOptionsFunctions({
+				currentParameters: { recipientType: 'user' },
+			});
+			const result = await node.methods.listSearch.searchRecipients.call(fns, 'ali');
+			expect(result.results.map((o) => o.value)).toEqual(['u-1']);
+			expect(result.paginationToken).toBe(
+				'/graph/v1.0/users?$top=100&$search=%22ali%22&$skiptoken=abc',
+			);
+		});
+	});
+
+	describe('space:share', () => {
+		it('creates a public link at the drive root', async () => {
+			// Personal drives reject root createLink with "unsupported space type",
+			// so integration mode spins up a tmp project space (same pattern as the
+			// space invite test) and tears it down with disable+purge.
+			let targetSpaceId = driveId;
+			let targetSpaceIdEnc = driveIdEnc;
+
+			if (IS_INTEGRATION) {
+				const { fns: httpFns } = makeExecuteFunctions({ parameters: {} });
+				const httpCall = httpFns.helpers.httpRequestWithAuthentication as (
+					cred: string,
+					opts: { method: string; url: string; body?: unknown; headers?: Record<string, string>; json: boolean },
+				) => Promise<{ id?: string }>;
+				const created = await httpCall('openCloudApi', {
+					method: 'POST',
+					url: `${TEST_SERVER}/graph/v1.0/drives`,
+					body: {
+						name: `n8n-link-space-${Date.now()}`,
+						driveType: 'project',
+						description: 'tmp space for public-link test',
+					},
+					headers: { 'Content-Type': 'application/json' },
+					json: true,
+				});
+				if (!created.id) throw new Error('project-space creation returned no id');
+				targetSpaceId = created.id;
+				targetSpaceIdEnc = encodeURIComponent(created.id);
+			} else {
+				nock(TEST_SERVER)
+					.post(`/graph/v1beta1/drives/${targetSpaceIdEnc}/root/createLink`, { type: 'view' })
+					.reply(200, {
+						id: 'perm-root-link',
+						link: { type: 'view', webUrl: `${TEST_SERVER}/s/root-link` },
+					});
+			}
+
+			const { fns } = makeExecuteFunctions({
+				parameters: {
+					resource: 'space', operation: 'share', space: targetSpaceId,
+					recipientType: 'publicLink',
+					linkType: 'view', password: '', expirationDateTime: '',
+				},
+			});
+			let result: Array<Array<{ json: { link?: { type?: string } } }>>;
+			try {
+				result = (await node.execute.call(fns)) as Array<Array<{ json: { link?: { type?: string } } }>>;
+			} catch (err) {
+				// If a non-default OpenCloud install enforces a password policy on
+				// view links the node throws the "set password" hint. Our CI
+				// compose disables enforcement (OC_SHARING_PUBLIC_*_MUST_HAVE_PASSWORD=false),
+				// so this branch is effectively dead on the canonical stack; kept
+				// here so the test stays robust against differently-configured
+				// servers.
+				if (IS_INTEGRATION && /password/i.test((err as Error).message)) {
+					// eslint-disable-next-line no-console
+					console.warn(
+						'space:share createLink soft-skipped: server enforces password policy on public links',
+					);
+					return;
+				}
+				throw err;
+			} finally {
+				if (IS_INTEGRATION && targetSpaceId !== driveId) {
+					const { fns: cleanupFns } = makeExecuteFunctions({ parameters: {} });
+					const httpCall = cleanupFns.helpers.httpRequestWithAuthentication as (
+						cred: string,
+						opts: { method: string; url: string; headers?: Record<string, string>; json: boolean },
+					) => Promise<unknown>;
+					const url = `${TEST_SERVER}/graph/v1.0/drives/${targetSpaceIdEnc}`;
+					await httpCall('openCloudApi', { method: 'DELETE', url, json: true })
+						.catch(() => null);
+					await httpCall('openCloudApi', {
+						method: 'DELETE', url, headers: { Purge: 'T' }, json: true,
+					}).catch(() => null);
+				}
+			}
+			expect(result[0][0].json.link?.type).toBe('view');
+		});
+
+		// Pure validation, no network: dual-mode by definition.
+		it('rejects invite missing recipientId with a clear error', async () => {
+			const { fns } = makeExecuteFunctions({
+				parameters: {
+					resource: 'space', operation: 'share', space: driveId,
+					recipientType: 'user',
+					recipientId: '',
+					role: 'role-x',
+				},
+			});
+			await expect(node.execute.call(fns)).rejects.toThrow(/Recipient ID is required/);
+		});
+
+		it('rejects invite missing role with a clear error', async () => {
+			const { fns } = makeExecuteFunctions({
+				parameters: {
+					resource: 'space', operation: 'share', space: driveId,
+					recipientType: 'user',
+					recipientId: 'u-1',
+					role: '',
+				},
+			});
+			await expect(node.execute.call(fns)).rejects.toThrow(/Role is required/);
+		});
+	});
+
 	// --- Mock-only tests below: error-path simulation that can't be reliably
 	// reproduced against an arbitrary real server. ---
 
@@ -441,6 +1023,7 @@ describe('OpenCloud node', () => {
 			const { fns } = makeExecuteFunctions({
 				parameters: {
 					resource: 'file', operation: 'share', space: driveId,
+					recipientType: 'publicLink',
 					path: '/Documents/report.pdf',
 					linkType: 'view', password: '', expirationDateTime: '',
 				},

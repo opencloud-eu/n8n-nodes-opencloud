@@ -4,6 +4,8 @@ import type {
 	IHttpRequestMethods,
 	ILoadOptionsFunctions,
 	INodeExecutionData,
+	INodeListSearchItems,
+	INodeListSearchResult,
 	INodePropertyOptions,
 	INodeType,
 	INodeTypeDescription,
@@ -11,7 +13,11 @@ import type {
 } from 'n8n-workflow';
 import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
-import type { DriveItemsResponse, DrivesResponse } from './GenericFunctions';
+import type {
+	DriveItemsResponse,
+	DrivesResponse,
+	RoleDefinition,
+} from './GenericFunctions';
 import { openCloudApiRequest } from './GenericFunctions';
 
 function driveChildrenUrl(driveId: string, itemId: string): string {
@@ -19,7 +25,13 @@ function driveChildrenUrl(driveId: string, itemId: string): string {
 }
 
 function splitPath(rawPath: string): string[] {
-	return rawPath.split('/').filter((segment) => segment.length > 0);
+	// Trim per segment to tolerate accidental whitespace (e.g. " /Albums"
+	// pasted into the path field). Empty-after-trim segments collapse so
+	// "/" and "" both yield [].
+	return rawPath
+		.split('/')
+		.map((segment) => segment.trim())
+		.filter((segment) => segment.length > 0);
 }
 
 function joinPath(segments: string[]): string {
@@ -136,6 +148,13 @@ export class OpenCloud implements INodeType {
 						value: 'list',
 						description: 'List all drives (Personal, Shares, Project) the authenticated user can see',
 						action: 'List spaces',
+					},
+					{
+						name: 'Share',
+						value: 'share',
+						description:
+							'Create a public link or invite a user/group to the space (drive root)',
+						action: 'Share a space',
 					},
 				],
 				default: 'list',
@@ -404,7 +423,11 @@ export class OpenCloud implements INodeType {
 					'The OpenCloud space (drive) to operate in. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 				displayOptions: {
 					show: {
-						resource: ['folder', 'file'],
+						resource: ['folder', 'file', 'space'],
+					},
+					hide: {
+						resource: ['space'],
+						operation: ['list'],
 					},
 				},
 			},
@@ -585,24 +608,53 @@ export class OpenCloud implements INodeType {
 				description: 'Name of the folder to create. Use forward slashes to create nested folders in one step (e.g. "Reports/2024" creates Reports and, inside it, 2024). Each missing level is created automatically.',
 			},
 			{
-				displayName: 'Link Type',
-				name: 'linkType',
+				displayName: 'Recipient Type',
+				name: 'recipientType',
 				type: 'options',
-				default: 'view',
+				default: 'publicLink',
 				displayOptions: {
 					show: {
-						resource: ['file', 'folder'],
+						resource: ['file', 'folder', 'space'],
 						operation: ['share'],
 					},
 				},
 				options: [
-					{ name: 'Blocks Download', value: 'blocksDownload', description: 'View-only without download capability' },
-					{ name: 'Create Only', value: 'createOnly', description: 'Folder only — recipients can add but not list' },
-					{ name: 'Edit', value: 'edit', description: 'Recipients can view and edit the item' },
-					{ name: 'Upload', value: 'upload', description: 'Folder only — recipients can add new items' },
-					{ name: 'View', value: 'view', description: 'Recipients can view the item' },
+					{
+						name: 'Group',
+						value: 'group',
+						description: 'Invite a group (by name or ID) with a unified role',
+					},
+					{
+						name: 'Public Link',
+						value: 'publicLink',
+						description: 'Generate a shareable URL (createLink). Anyone with the URL can access according to the link type.',
+					},
+					{
+						name: 'User',
+						value: 'user',
+						description: 'Invite a specific user (by name or ID) with a unified role',
+					},
 				],
-				description: 'Permission level granted by the link',
+				description: 'How to share the resource',
+			},
+			{
+				displayName: 'Link Type Name or ID',
+				name: 'linkType',
+				type: 'options',
+				typeOptions: {
+					loadOptionsMethod: 'getLinkTypes',
+					loadOptionsDependsOn: ['resource'],
+				},
+				default: 'view',
+				displayOptions: {
+					show: {
+						resource: ['file', 'folder', 'space'],
+						operation: ['share'],
+						recipientType: ['publicLink'],
+					},
+				},
+				description:
+					'Permission level granted by the link. The list is filtered by resource type (e.g. Upload and Create Only only apply to folders). Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Password',
@@ -612,12 +664,75 @@ export class OpenCloud implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						resource: ['file', 'folder'],
+						resource: ['file', 'folder', 'space'],
 						operation: ['share'],
+						recipientType: ['publicLink'],
 					},
 				},
 				description:
-					'Optional password protecting the link. The server may require a password for certain link types — if so, the request will fail with a clear hint to set this field.',
+					'Optional password protecting the link. The server may require a password for certain link types; if so, the request fails with a clear hint to set this field.',
+			},
+			{
+				displayName: 'Recipient',
+				name: 'recipientId',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
+				required: true,
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						typeOptions: {
+							searchListMethod: 'searchRecipients',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: 'b1f74ec4-dd7e-11ef-a543-03775734d0f7',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^[0-9a-fA-F-]+$',
+									errorMessage: 'Recipient ID must be a GUID (hex digits and dashes)',
+								},
+							},
+						],
+					},
+				],
+				displayOptions: {
+					show: {
+						resource: ['file', 'folder', 'space'],
+						operation: ['share'],
+						recipientType: ['user', 'group'],
+					},
+				},
+				description:
+					'User or group to invite. Search the directory (admin or matching the server\'s minimum search length for regular users), or paste a known ID.',
+			},
+			{
+				displayName: 'Role Name or ID',
+				name: 'role',
+				type: 'options',
+				typeOptions: {
+					loadOptionsMethod: 'getShareRoles',
+					loadOptionsDependsOn: ['resource'],
+				},
+				default: '',
+				required: true,
+				displayOptions: {
+					show: {
+						resource: ['file', 'folder', 'space'],
+						operation: ['share'],
+						recipientType: ['user', 'group'],
+					},
+				},
+				description:
+					'Unified role granted to the recipient. The list is filtered by resource type. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 			},
 			{
 				displayName: 'Expiration',
@@ -626,12 +741,12 @@ export class OpenCloud implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						resource: ['file', 'folder'],
+						resource: ['file', 'folder', 'space'],
 						operation: ['share'],
 					},
 				},
 				placeholder: '2026-12-31T23:59:59Z',
-				description: 'Optional ISO-8601 timestamp when the link should expire. Leave empty for no expiration.',
+				description: 'Optional ISO-8601 timestamp when the link or invite should expire. Leave empty for no expiration.',
 			},
 		],
 	};
@@ -652,6 +767,178 @@ export class OpenCloud implements INodeType {
 					name: `${drive.name} (${drive.driveType ?? 'drive'})`,
 					value: drive.id ?? '',
 				}));
+			},
+
+			async getLinkTypes(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				// The link-type enum is defined in the Libre Graph spec, not served
+				// by an endpoint; web hardcodes the same catalog (see useLinkTypes.ts
+				// in opencloud-eu/web). What's dynamic is filtering by resource: per
+				// the spec, `upload` and `createOnly` only apply to folders.
+				const catalog: Array<{
+					value: string;
+					name: string;
+					description: string;
+					appliesTo: Array<'file' | 'folder' | 'space'>;
+				}> = [
+					{
+						value: 'view',
+						name: 'View',
+						description: 'Recipients can view the item',
+						appliesTo: ['file', 'folder', 'space'],
+					},
+					{
+						value: 'edit',
+						name: 'Edit',
+						description: 'Recipients can view and edit',
+						appliesTo: ['file', 'folder', 'space'],
+					},
+					{
+						value: 'upload',
+						name: 'Upload',
+						description: 'Recipients can add new items (folder only)',
+						appliesTo: ['folder'],
+					},
+					{
+						value: 'createOnly',
+						name: 'Create Only',
+						description: 'Recipients can add but not list (folder only)',
+						appliesTo: ['folder'],
+					},
+					{
+						value: 'blocksDownload',
+						name: 'Blocks Download',
+						description: 'View-only without download capability',
+						appliesTo: ['file', 'folder', 'space'],
+					},
+					{
+						value: 'internal',
+						name: 'Internal',
+						description: 'Internal link, no permissions granted',
+						appliesTo: ['file', 'folder', 'space'],
+					},
+				];
+
+				const resource = this.getCurrentNodeParameter('resource') as
+					| 'file'
+					| 'folder'
+					| 'space'
+					| undefined;
+
+				return catalog
+					.filter((entry) => !resource || entry.appliesTo.includes(resource))
+					.map((entry) => ({
+						name: entry.name,
+						value: entry.value,
+						description: entry.description,
+					}));
+			},
+
+			async getShareRoles(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+				// /v1beta1/roleManagement/... is where this endpoint actually lives
+				// (the v1.0 prefix returns 404). Response is a bare array of
+				// unifiedRoleDefinition objects, not a {value: [...]} OData
+				// collection like most other Graph endpoints.
+				const response = (await openCloudApiRequest.call(
+					this,
+					'GET',
+					'/graph/v1beta1/roleManagement/permissions/roleDefinitions',
+					'',
+					{},
+					true,
+				)) as RoleDefinition[];
+
+				// Each role's rolePermissions[].condition carries a resource-type
+				// predicate ("exists @Resource.File", "@Resource.Folder",
+				// "@Resource.Root"). Filter by the current resource so users only see
+				// roles applicable to what they're sharing. Falls back to all roles
+				// when the resource can't be read (e.g. via an expression).
+				const resource = this.getCurrentNodeParameter('resource') as string | undefined;
+				let conditionMatch: string | null = null;
+				if (resource === 'file') conditionMatch = '@Resource.File';
+				else if (resource === 'folder') conditionMatch = '@Resource.Folder';
+				else if (resource === 'space') conditionMatch = '@Resource.Root';
+
+				const roleApplies = (role: RoleDefinition) => {
+					if (!conditionMatch) return true;
+					return (role.rolePermissions ?? []).some((p) =>
+						(p.condition ?? '').includes(conditionMatch!),
+					);
+				};
+
+				return (response ?? [])
+					.filter((role): role is RoleDefinition & { id: string } =>
+						typeof role.id === 'string' && role.id.length > 0,
+					)
+					.filter(roleApplies)
+					.map((role) => ({
+						name: role.displayName ?? role.id,
+						value: role.id,
+						description: role.description ?? undefined,
+					}));
+			},
+		},
+		listSearch: {
+			async searchRecipients(
+				this: ILoadOptionsFunctions,
+				filter?: string,
+				paginationToken?: string,
+			): Promise<INodeListSearchResult> {
+				// Pick the directory endpoint based on the sibling recipientType
+				// field. Both endpoints require admin permissions OR a search term
+				// meeting the server's IdentitySearchMinLength (typically 3); the
+				// search box on the resourceLocator naturally feeds $search.
+				const recipientType =
+					(this.getCurrentNodeParameter('recipientType') as string) || 'user';
+				const basePath =
+					recipientType === 'group' ? '/graph/v1.0/groups' : '/graph/v1.0/users';
+
+				const params: string[] = ['$top=100'];
+				if (filter && filter.trim().length > 0) {
+					params.push(`$search=${encodeURIComponent(`"${filter.trim()}"`)}`);
+				}
+				// paginationToken carries an opaque @odata.nextLink path between
+				// pages; honor it verbatim and ignore filter (the server preserves
+				// the original $search in the next-link URL).
+				const endpoint =
+					typeof paginationToken === 'string' && paginationToken.length > 0
+						? paginationToken
+						: `${basePath}?${params.join('&')}`;
+
+				const response = (await openCloudApiRequest.call(
+					this,
+					'GET',
+					endpoint,
+					'',
+					{},
+					true,
+				)) as {
+					value?: Array<{
+						id?: string;
+						displayName?: string;
+						onPremisesSamAccountName?: string;
+						mail?: string;
+					}>;
+					'@odata.nextLink'?: string;
+				};
+
+				const results: INodeListSearchItems[] = (response.value ?? [])
+					.filter(
+						(entry): entry is { id: string; displayName?: string; onPremisesSamAccountName?: string; mail?: string } =>
+							typeof entry.id === 'string' && entry.id.length > 0,
+					)
+					.map((entry) => {
+						const label = entry.displayName ?? entry.onPremisesSamAccountName ?? entry.id;
+						const hint = entry.mail ?? entry.onPremisesSamAccountName;
+						return {
+							name: hint && hint !== label ? `${label} (${hint})` : label,
+							value: entry.id,
+						};
+					});
+
+				return {
+					results,
+					paginationToken: response['@odata.nextLink'],
+				};
 			},
 		},
 	};
@@ -1011,74 +1298,146 @@ export class OpenCloud implements INodeType {
 						},
 						pairedItem: { item: i },
 					});
-				} else if (operation === 'share' && (resource === 'folder' || resource === 'file')) {
+				} else if (
+					operation === 'share' &&
+					(resource === 'folder' || resource === 'file' || resource === 'space')
+				) {
 					const driveId = this.getNodeParameter('space', i) as string;
-					const rawPath = this.getNodeParameter('path', i) as string;
-					const linkType = this.getNodeParameter('linkType', i) as string;
-					const password = (this.getNodeParameter('password', i, '') as string).trim();
+					const recipientType = this.getNodeParameter('recipientType', i, 'publicLink') as string;
 					const expirationDateTime = (
 						this.getNodeParameter('expirationDateTime', i, '') as string
 					).trim();
 
-					if (!rawPath.trim()) {
-						throw new NodeOperationError(this.getNode(), 'Path is required for share', {
-							itemIndex: i,
-						});
+					// Endpoint base differs between space (drive root) and file/folder
+					// (specific item). Spaces target /root/{action}; items target
+					// /items/{itemId}/{action} after resolving the path.
+					let endpointBase: string;
+					if (resource === 'space') {
+						endpointBase = `/graph/v1beta1/drives/${encodeURIComponent(driveId)}/root`;
+					} else {
+						const rawPath = this.getNodeParameter('path', i) as string;
+						if (!rawPath.trim()) {
+							throw new NodeOperationError(this.getNode(), 'Path is required for share', {
+								itemIndex: i,
+							});
+						}
+						const itemId = await resolvePathToItemId(this, driveId, rawPath, i);
+						endpointBase = `/graph/v1beta1/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}`;
 					}
 
-					const itemId = await resolvePathToItemId(this, driveId, rawPath, i);
+					if (recipientType === 'publicLink') {
+						const linkType = this.getNodeParameter('linkType', i) as string;
+						const password = (this.getNodeParameter('password', i, '') as string).trim();
 
-					const body: IDataObject = { type: linkType };
-					if (password) body.password = password;
-					if (expirationDateTime) body.expirationDateTime = expirationDateTime;
+						const body: IDataObject = { type: linkType };
+						if (password) body.password = password;
+						if (expirationDateTime) body.expirationDateTime = expirationDateTime;
 
-					try {
+						try {
+							const response = (await openCloudApiRequest.call(
+								this,
+								'POST',
+								`${endpointBase}/createLink`,
+								body,
+								{ 'Content-Type': 'application/json' },
+								true,
+							)) as IDataObject;
+
+							returnData.push({
+								json: response,
+								pairedItem: { item: i },
+							});
+						} catch (error) {
+							// The server returns 400 "password protection is enforced" when it
+							// requires a password for the chosen link type but none was sent. The
+							// detail message lives in the response body, which n8n's request stack
+							// often drops before our catch, so we can't reliably string-match.
+							// Use the HTTP status as the signal: with our pre-validated inputs
+							// (linkType from a closed dropdown, item already resolved), the only
+							// realistic 400 for a non-internal link with no password is password
+							// enforcement.
+							//
+							// NodeOperationError (not NodeApiError) on purpose: NodeApiError's
+							// constructor rewrites the surface message via httpCode COMMON_ERRORS
+							// mappings ("400" -> "Bad request"), clobbering our hint.
+							const code = String(
+								(error as { httpCode?: unknown }).httpCode ??
+									(error as { statusCode?: unknown }).statusCode ??
+									(error as { cause?: { statusCode?: unknown } }).cause?.statusCode ??
+									'',
+							);
+							if (
+							code === '400' &&
+							!password &&
+							linkType !== 'internal' &&
+							(resource === 'file' || resource === 'folder')
+						) {
+								throw new NodeOperationError(
+									this.getNode(),
+									'This link type requires a password on the server',
+									{
+										description:
+											'Set the Password field and retry. The server enforces a password for this link type.',
+										itemIndex: i,
+									},
+								);
+							}
+							throw error;
+						}
+					} else {
+						// recipientType is 'user' or 'group'
+						// recipientId is a resourceLocator; extractValue: true unwraps
+						// {mode, value} to the bare id string. Bare strings still pass
+						// through for back-compat with existing test fixtures.
+						const recipientId = (
+							this.getNodeParameter('recipientId', i, '', {
+								extractValue: true,
+							}) as string
+						).trim();
+						const role = (this.getNodeParameter('role', i) as string).trim();
+
+						if (!recipientId) {
+							throw new NodeOperationError(
+								this.getNode(),
+								'Recipient ID is required for invite',
+								{ itemIndex: i },
+							);
+						}
+						if (!role) {
+							throw new NodeOperationError(this.getNode(), 'Role is required for invite', {
+								itemIndex: i,
+							});
+						}
+
+						const body: IDataObject = {
+							recipients: [
+								{
+									objectId: recipientId,
+									'@libre.graph.recipient.type': recipientType,
+								},
+							],
+							roles: [role],
+						};
+						if (expirationDateTime) body.expirationDateTime = expirationDateTime;
+
 						const response = (await openCloudApiRequest.call(
 							this,
 							'POST',
-							`/graph/v1beta1/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/createLink`,
+							`${endpointBase}/invite`,
 							body,
 							{ 'Content-Type': 'application/json' },
 							true,
-						)) as IDataObject;
+						)) as { value?: IDataObject[] };
 
-						returnData.push({
-							json: response,
-							pairedItem: { item: i },
-						});
-					} catch (error) {
-						// The server returns 400 "password protection is enforced" when it
-						// requires a password for the chosen link type but none was sent. The
-						// detail message lives in the response body, which n8n's request stack
-						// often drops before our catch — so we can't reliably string-match.
-						// Use the HTTP status as the signal: with our pre-validated inputs
-						// (linkType from a closed dropdown, item already resolved), the only
-						// realistic 400 for a non-internal link with no password is password
-						// enforcement.
-						//
-						// NodeOperationError (not NodeApiError) on purpose: NodeApiError's
-						// constructor rewrites the surface message via httpCode → COMMON_ERRORS
-						// ("400" → "Bad request - please check your parameters"), clobbering
-						// our hint. NodeOperationError passes undefined as the code, so the
-						// custom message survives.
-						const code = String(
-							(error as { httpCode?: unknown }).httpCode ??
-								(error as { statusCode?: unknown }).statusCode ??
-								(error as { cause?: { statusCode?: unknown } }).cause?.statusCode ??
-								'',
-						);
-						if (code === '400' && !password && linkType !== 'internal') {
-							throw new NodeOperationError(
-								this.getNode(),
-								'This link type requires a password on the server',
-								{
-									description:
-										'Set the Password field and retry. The server enforces a password for this link type.',
-									itemIndex: i,
-								},
-							);
+						// /invite returns a collection of permissions; iterate so each
+						// permission becomes its own n8n output item, matching the
+						// unwrapping convention used by folder:list, space:list, etc.
+						for (const permission of response.value ?? []) {
+							returnData.push({
+								json: permission,
+								pairedItem: { item: i },
+							});
 						}
-						throw error;
 					}
 				} else if (operation === 'delete' && (resource === 'folder' || resource === 'file')) {
 					const driveId = this.getNodeParameter('space', i) as string;
