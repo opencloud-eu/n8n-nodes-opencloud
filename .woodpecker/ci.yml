@@ -1,0 +1,146 @@
+# Woodpecker CI — equivalent of .github/workflows/ci.yml
+#
+# e2e services (opencloud, n8n) are started as detached steps AFTER build
+# so dist/ exists when n8n loads the community node. All steps share the
+# Woodpecker pipeline network; services are reachable by their step name
+# as the hostname. Woodpecker stops detached containers automatically when
+# the pipeline ends, so no teardown step is needed.
+
+when:
+  - event: push
+    branch: main
+  - event: pull_request
+
+variables:
+  - &node_image 'quay.io/opencloudeu/nodejs-ci:24@sha256:efb3ac3e7e7180aa24fec6f6811d7a59385798676a6a7081dc092faa0800951b'
+  - &oc_image 'opencloudeu/opencloud-rolling:6.1.0@sha256:235b5d988729aa821bd068bbdc60175270b05bd5fefa77b6d0e2ec5aeadccd0b'
+  - &minio_mc_image 'minio/mc:RELEASE.2021-10-07T04-19-58Z@sha256:a1d9629e969a55e5b957dc7656c3ee893a95cf6c5733223fa0283b1f23f7142e'
+
+steps:
+  # ── test & build ─────────────────────────────────────────────────────────────────
+
+  - name: install
+    image: *node_image
+    commands:
+      - pnpm install --frozen-lockfile
+
+  - name: typecheck
+    image: *node_image
+    commands:
+      - pnpm typecheck
+
+  - name: lint
+    image: *node_image
+    commands:
+      - pnpm lint
+
+  - name: test
+    image: *node_image
+    commands:
+      - pnpm test
+
+  - name: build
+    image: *node_image
+    commands:
+      - pnpm build
+
+  # ── e2e ───────────────────────────────────────────────────────────────────
+
+  - name: opencloud
+    image: *oc_image
+    detach: true
+    environment:
+      OC_URL: https://opencloud:9200
+      OC_INSECURE: true
+      PROXY_TLS: true
+      PROXY_ENABLE_BASIC_AUTH: true
+      IDM_ADMIN_PASSWORD: admin
+      IDM_CREATE_DEMO_USERS: true
+      OC_PASSWORD_POLICY_DISABLED: true
+      OC_SHARING_PUBLIC_SHARE_MUST_HAVE_PASSWORD: false
+      OC_SHARING_PUBLIC_WRITEABLE_SHARE_MUST_HAVE_PASSWORD: false
+      OC_LOG_LEVEL: warn
+    commands:
+      - opencloud init || true
+      - opencloud server
+
+  - name: n8n
+    image: n8nio/n8n:2.17.0
+    detach: true
+    environment:
+      N8N_DEV_RELOAD: true
+      N8N_INSTANCE_OWNER_MANAGED_BY_ENV: true
+      N8N_INSTANCE_OWNER_EMAIL: admin@example.com
+      N8N_INSTANCE_OWNER_FIRST_NAME: Dev
+      N8N_INSTANCE_OWNER_LAST_NAME: User
+      # bcrypt hash of "admin" — DEV/CI only, never reuse outside local/CI.
+      N8N_INSTANCE_OWNER_PASSWORD_HASH: '$2y$05$E8jQECl6MClrPcjdt6WZ7ObXt2rDqhEmxa63uEvCyY.TWruC7.8L.'
+      GENERIC_TIMEZONE: Europe/Berlin
+      TZ: Europe/Berlin
+      N8N_RUNNERS_ENABLED: true
+      N8N_DIAGNOSTICS_ENABLED: false
+      # n8n blocks non-localhost HTTP access when secure cookies are on.
+      # In CI the service is reachable as http://n8n:5678 (not localhost),
+      # so the guard must be disabled explicitly.
+      N8N_SECURE_COOKIE: false
+    commands:
+      # Symlink the built node into n8n's community-packages directory.
+      # CI_WORKSPACE is injected by Woodpecker and points to the cloned repo.
+      - mkdir -p /home/node/.n8n/nodes/node_modules/@opencloud-eu/n8n-nodes-opencloud
+      - ln -sf $CI_WORKSPACE/dev/custom-package.json /home/node/.n8n/nodes/package.json
+      - ln -sf $CI_WORKSPACE/package.json /home/node/.n8n/nodes/node_modules/@opencloud-eu/n8n-nodes-opencloud/package.json
+      - ln -sf $CI_WORKSPACE/dist /home/node/.n8n/nodes/node_modules/@opencloud-eu/n8n-nodes-opencloud/dist
+      - n8n
+
+  - name: e2e-wait-opencloud
+    image: ghcr.io/dvjn/woodpecker-is-it-up-yet-plugin
+    settings:
+      host: opencloud
+      port: 9200
+
+  - name: e2e-wait-n8n
+    image: ghcr.io/dvjn/woodpecker-is-it-up-yet-plugin
+    settings:
+      host: n8n
+      port: 5678
+
+  - name: e2e-run
+    image: *node_image
+    environment:
+      OPENCLOUD_URL: https://opencloud:9200
+      OPENCLOUD_USER: admin
+      OPENCLOUD_PASSWORD: admin
+      N8N_URL: http://n8n:5678
+    commands:
+      - env
+      - pnpm exec playwright install --with-deps chromium
+      - pnpm test:e2e
+
+  - name: upload-tracing-result
+    image: *minio_mc_image
+    environment:
+      MC_HOST: https://s3.ci.opencloud.eu
+      AWS_ACCESS_KEY_ID:
+        from_secret: cache_s3_access_key
+      AWS_SECRET_ACCESS_KEY:
+        from_secret: cache_s3_secret_key
+      PUBLIC_BUCKET: public
+    commands:
+      - mc alias set s3 $MC_HOST $AWS_ACCESS_KEY_ID $AWS_SECRET_ACCESS_KEY
+      - mc cp -a -r test-results/ s3/$PUBLIC_BUCKET/web-extensions/tracing/$CI_PIPELINE_NUMBER/
+      - echo "========================================="
+      - echo "Trace files uploaded successfully!"
+      - echo "========================================="
+      - echo "To view the traces, run the following commands:"
+      - echo ""
+      - |
+        for f in test-results/*/*.zip; do
+          if [ -f "$f" ]; then
+            path=$(echo "$f" | sed 's|^test-results/||')
+            echo "npx playwright show-trace $MC_HOST/$PUBLIC_BUCKET/web-extensions/tracing/$CI_PIPELINE_NUMBER/$path"
+            echo ""
+          fi
+        done
+      - echo "========================================="
+    when:
+      status: [failure]
