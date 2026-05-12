@@ -11,7 +11,7 @@ import type {
 } from 'n8n-workflow';
 import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
-import type { DriveItemsResponse, DrivesResponse } from './GenericFunctions';
+import type { DriveItem, DriveItemsResponse, DrivesResponse } from './GenericFunctions';
 import { openCloudApiRequest } from './GenericFunctions';
 
 function driveChildrenUrl(driveId: string, itemId: string): string {
@@ -36,14 +36,37 @@ function lastSegment(path: string): string {
 	return segments.length === 0 ? '' : segments[segments.length - 1];
 }
 
+/**
+ * Returns the item id at `rawPath` within `driveId`. The drive root is a
+ * special case: OpenCloud's root item id equals the drive id, so an empty
+ * path resolves without a Graph call. Subpaths delegate to resolvePathToItem.
+ */
 async function resolvePathToItemId(
 	context: IExecuteFunctions,
 	driveId: string,
 	rawPath: string,
 	itemIndex: number,
 ): Promise<string> {
+	if (splitPath(rawPath).length === 0) return driveId;
+	return (await resolvePathToItem(context, driveId, rawPath, itemIndex)).id!;
+}
+
+async function resolvePathToItem(
+	context: IExecuteFunctions,
+	driveId: string,
+	rawPath: string,
+	itemIndex: number,
+): Promise<DriveItem> {
 	const segments = splitPath(rawPath);
+	if (segments.length === 0) {
+		throw new NodeOperationError(
+			context.getNode(),
+			'Cannot resolve an empty path to a drive item',
+			{ itemIndex },
+		);
+	}
 	let currentItemId = driveId;
+	let lastMatch: DriveItem | undefined;
 	for (let i = 0; i < segments.length; i++) {
 		const segment = segments[i];
 		const isLast = i === segments.length - 1;
@@ -69,8 +92,9 @@ async function resolvePathToItemId(
 			);
 		}
 		currentItemId = match.id;
+		lastMatch = match;
 	}
-	return currentItemId;
+	return lastMatch!;
 }
 
 export class OpenCloud implements INodeType {
@@ -753,18 +777,16 @@ export class OpenCloud implements INodeType {
 					}
 					delete body.password;
 
-					await openCloudApiRequest.call(
+					// Libre Graph PATCH /users/{id} returns 200 with the updated user.
+					const updatedUser = (await openCloudApiRequest.call(
 						this,
 						'PATCH',
 						`/graph/v1.0/users/${encodeURIComponent(userId)}`,
 						body,
 						{ 'Content-Type': 'application/json' },
 						true,
-					);
-					returnData.push({
-						json: { success: true, resource: 'user', operation: 'update', userId, fields: updates },
-						pairedItem: { item: i },
-					});
+					)) as IDataObject;
+					returnData.push({ json: updatedUser, pairedItem: { item: i } });
 				} else if (resource === 'user' && operation === 'delete') {
 					const userId = this.getNodeParameter('userId', i) as string;
 					await openCloudApiRequest.call(
@@ -775,10 +797,8 @@ export class OpenCloud implements INodeType {
 						{},
 						true,
 					);
-					returnData.push({
-						json: { success: true, resource: 'user', operation: 'delete', userId },
-						pairedItem: { item: i },
-					});
+					// Libre Graph DELETE /users/{id} returns 204 No Content.
+					returnData.push({ json: {}, pairedItem: { item: i } });
 				} else if (resource === 'folder' && operation === 'list') {
 					const driveId = this.getNodeParameter('space', i) as string;
 					const rawPath = this.getNodeParameter('path', i) as string;
@@ -814,7 +834,6 @@ export class OpenCloud implements INodeType {
 					const nameSegments = splitPath(name);
 					const parentSegments = splitPath(parentPath);
 					const finalPath = '/' + [...parentSegments, ...nameSegments].join('/');
-					const finalName = nameSegments[nameSegments.length - 1];
 
 					for (let j = 0; j < nameSegments.length; j++) {
 						const segPath = '/' + [...parentSegments, ...nameSegments.slice(0, j + 1)].join('/');
@@ -839,15 +858,9 @@ export class OpenCloud implements INodeType {
 						}
 					}
 
+					const createdItem = await resolvePathToItem(this, driveId, finalPath, i);
 					returnData.push({
-						json: {
-							success: true,
-							resource: 'folder',
-							operation: 'create',
-							spaceId: driveId,
-							path: finalPath,
-							name: finalName,
-						},
+						json: createdItem as unknown as IDataObject,
 						pairedItem: { item: i },
 					});
 				} else if (resource === 'file' && operation === 'upload') {
@@ -887,15 +900,9 @@ export class OpenCloud implements INodeType {
 						false,
 					);
 
+					const uploadedItem = await resolvePathToItem(this, driveId, filePath, i);
 					returnData.push({
-						json: {
-							success: true,
-							resource: 'file',
-							operation: 'upload',
-							spaceId: driveId,
-							path: filePath,
-							name,
-						},
+						json: uploadedItem as unknown as IDataObject,
 						pairedItem: { item: i },
 					});
 				} else if (resource === 'file' && operation === 'download') {
@@ -924,21 +931,16 @@ export class OpenCloud implements INodeType {
 
 					const fileName = lastSegment(rawPath);
 					const buffer = Buffer.isBuffer(data) ? data : Buffer.from(data as unknown as string);
-					const newItem: INodeExecutionData = {
-						json: {
-							success: true,
-							resource: 'file',
-							operation: 'download',
-							spaceId: driveId,
-							path: rawPath,
-							name: fileName,
-						},
+					// Libre Graph GET /drives/{id}/items/{id}/content returns bytes only.
+					// json passes the input item through, matching the n8n convention for
+					// binary-emitting ops (Google Drive, Dropbox, S3 all do this).
+					returnData.push({
+						json: items[i].json,
 						binary: {
 							[outputProp]: await this.helpers.prepareBinaryData(buffer, fileName),
 						},
 						pairedItem: { item: i },
-					};
-					returnData.push(newItem);
+					});
 				} else if (
 					(operation === 'copy' || operation === 'move') &&
 					(resource === 'folder' || resource === 'file')
@@ -998,17 +1000,13 @@ export class OpenCloud implements INodeType {
 						throw error;
 					}
 
+					// Both move and copy return the destination driveItem. MS Graph's
+					// copy is async (202 + monitor), but our WebDAV path is synchronous
+					// and the user has already waited, so we return the resulting item
+					// like move does.
+					const destinationItem = await resolvePathToItem(this, destDriveId, destFullPath, i);
 					returnData.push({
-						json: {
-							success: true,
-							resource,
-							operation,
-							sourceSpaceId: driveId,
-							sourcePath: srcPath,
-							destinationSpaceId: destDriveId,
-							destinationPath: destFullPath,
-							name: destName,
-						},
+						json: destinationItem as unknown as IDataObject,
 						pairedItem: { item: i },
 					});
 				} else if (operation === 'share' && (resource === 'folder' || resource === 'file')) {
@@ -1099,14 +1097,10 @@ export class OpenCloud implements INodeType {
 
 					await openCloudApiRequest.call(this, 'DELETE', url, '', {}, false);
 
+					// Item no longer exists, nothing meaningful to return. Empty object
+					// keeps the per-input-item output slot wired for pairedItem.
 					returnData.push({
-						json: {
-							success: true,
-							resource,
-							operation: 'delete',
-							spaceId: driveId,
-							path: rawPath,
-						},
+						json: {},
 						pairedItem: { item: i },
 					});
 				}
