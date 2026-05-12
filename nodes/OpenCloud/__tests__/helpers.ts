@@ -9,6 +9,7 @@ import https from 'node:https';
 import type {
 	IExecuteFunctions,
 	IHttpRequestOptions,
+	ILoadOptionsFunctions,
 	INode,
 } from 'n8n-workflow';
 
@@ -186,6 +187,57 @@ export function makeExecuteFunctions(opts: {
 		}),
 	};
 	(fns as unknown as { helpers: typeof helpers }).helpers = helpers;
+
+	return { fns, requestSpy };
+}
+
+/**
+ * Builds a mocked ILoadOptionsFunctions for testing loadOptions methods
+ * (getShareRoles, getRecipients, etc). Wires the same axios-backed request
+ * spy as makeExecuteFunctions so nock intercepts at the wire.
+ *
+ * `currentParameters` populates `getCurrentNodeParameter` (the n8n API
+ * loadOptions uses to read sibling fields like the current resource type or
+ * recipient type).
+ */
+export function makeLoadOptionsFunctions(opts: {
+	currentParameters?: Record<string, unknown>;
+}) {
+	const fns = mock<ILoadOptionsFunctions>();
+
+	fns.getCurrentNodeParameter.mockImplementation((name: string) => {
+		return opts.currentParameters?.[name];
+	});
+	fns.getCredentials.mockResolvedValue(credentials);
+	fns.getNode.mockReturnValue({
+		id: 'test-node',
+		name: 'OpenCloud',
+		type: '@opencloud-eu/n8n-nodes-opencloud.openCloud',
+		typeVersion: 1,
+		position: [0, 0],
+		parameters: {},
+	} as INode);
+
+	const requestSpy = vi.fn(async (_credType: string, options: IHttpRequestOptions) => {
+		const axiosConfig: AxiosRequestConfig = {
+			method: options.method,
+			url: options.url,
+			headers: { ...(options.headers as Record<string, string>) },
+			params: options.qs,
+			data: options.body,
+			auth: { username: credentials.user, password: credentials.password },
+			validateStatus: () => true,
+			httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+		};
+		const res = await axios.request(axiosConfig);
+		if (res.status >= 200 && res.status < 300) return res.data;
+		const e: Error & { httpCode?: number } = new Error(`HTTP ${res.status}`);
+		e.httpCode = res.status;
+		throw e;
+	});
+	(fns as unknown as { helpers: { httpRequestWithAuthentication: typeof requestSpy } }).helpers = {
+		httpRequestWithAuthentication: requestSpy,
+	};
 
 	return { fns, requestSpy };
 }
