@@ -34,9 +34,24 @@ services:
     restart: unless-stopped
     ports:
       - '${N8N_PORT:-5678}:5678'
+    # Make N8N_DEV_RELOAD actually work. The Alpine n8n image sets
+    # NODE_ENV=production (gates the feature off) and ships @parcel/watcher
+    # without its musl prebuild (watcher fails to load). Override NODE_ENV
+    # and install the matching musl prebuild on each start.
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -e
+        EXTRA=/home/node/parcel-watcher-musl
+        PARCEL_VERSION=$$(node -p "require('/usr/local/lib/node_modules/n8n/node_modules/@parcel/watcher/package.json').version")
+        mkdir -p "$$EXTRA"
+        npm install --prefix "$$EXTRA" --no-save --no-audit --no-fund "@parcel/watcher-linux-x64-musl@$$PARCEL_VERSION"
+        export NODE_PATH="$$EXTRA/node_modules:$$NODE_PATH"
+        exec /docker-entrypoint.sh "$$@"
+      - --
     environment:
-      # Hot-reload — n8n watches the custom-nodes dir and re-imports the module
-      # on file change. Requires NODE_ENV != 'production' (default for the image).
+      NODE_ENV: development
       N8N_DEV_RELOAD: 'true'
       # Auto-provision the owner account so first launch skips the setup wizard.
       # Login: admin@example.com / admin
