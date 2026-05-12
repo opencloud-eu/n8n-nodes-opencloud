@@ -422,11 +422,15 @@ describe('OpenCloud node', () => {
 					});
 			}
 
+			// recipientId is wrapped in the resourceLocator shape the n8n editor
+			// produces, to verify the handler's getNodeParameter(..., {extractValue:
+			// true}) path unwraps it correctly. The group invite test below leaves
+			// it as a bare string to keep back-compat coverage.
 			const result = (await runOnceJson({
 				resource: 'file', operation: 'share', space: driveId,
 				path: filePath,
 				recipientType: 'user',
-				recipientId,
+				recipientId: { __rl: true, mode: 'list', value: recipientId },
 				role: roleId,
 				expirationDateTime: '',
 			})) as { id?: string; roles?: string[]; grantedToV2?: { user?: { id?: string } } };
@@ -769,7 +773,7 @@ describe('OpenCloud node', () => {
 		});
 	});
 
-	describe('loadOptions: getRecipients', () => {
+	describe('listSearch: searchRecipients', () => {
 		it('lists users when recipientType is user', async () => {
 			if (!IS_INTEGRATION) {
 				nock(TEST_SERVER)
@@ -777,7 +781,7 @@ describe('OpenCloud node', () => {
 					.query({ $top: '100' })
 					.reply(200, {
 						value: [
-							{ id: 'u-1', displayName: 'Alice', onPremisesSamAccountName: 'alice' },
+							{ id: 'u-1', displayName: 'Alice', onPremisesSamAccountName: 'alice', mail: 'alice@example.com' },
 							{ id: 'u-2', displayName: 'Bob' },
 						],
 					});
@@ -785,16 +789,16 @@ describe('OpenCloud node', () => {
 			const { fns } = makeLoadOptionsFunctions({
 				currentParameters: { recipientType: 'user' },
 			});
-			const options = await node.methods.loadOptions.getRecipients.call(fns);
-			expect(options.length).toBeGreaterThan(0);
+			const result = await node.methods.listSearch.searchRecipients.call(fns);
+			expect(result.results.length).toBeGreaterThan(0);
 			if (!IS_INTEGRATION) {
-				expect(options.map((o) => o.value)).toEqual(['u-1', 'u-2']);
-				expect(options[0].name).toBe('Alice');
+				expect(result.results.map((o) => o.value)).toEqual(['u-1', 'u-2']);
+				expect(result.results[0].name).toBe('Alice (alice@example.com)');
 			} else {
-				// Every returned option should at least carry an id-shaped value.
-				for (const opt of options) {
-					expect(typeof opt.value).toBe('string');
-					expect((opt.value as string).length).toBeGreaterThan(0);
+				// Every returned entry should at least carry an id-shaped value.
+				for (const entry of result.results) {
+					expect(typeof entry.value).toBe('string');
+					expect((entry.value as string).length).toBeGreaterThan(0);
 				}
 			}
 		});
@@ -809,14 +813,14 @@ describe('OpenCloud node', () => {
 			const { fns } = makeLoadOptionsFunctions({
 				currentParameters: { recipientType: 'group' },
 			});
-			const options = await node.methods.loadOptions.getRecipients.call(fns);
+			const result = await node.methods.listSearch.searchRecipients.call(fns);
 			if (!IS_INTEGRATION) {
-				expect(options.map((o) => o.value)).toEqual(['g-1']);
-				expect(options[0].name).toBe('Engineering');
+				expect(result.results.map((o) => o.value)).toEqual(['g-1']);
+				expect(result.results[0].name).toBe('Engineering');
 			} else {
 				// Real server may or may not have groups; just verify the call shape.
-				for (const opt of options) {
-					expect(typeof opt.value).toBe('string');
+				for (const entry of result.results) {
+					expect(typeof entry.value).toBe('string');
 				}
 			}
 		});
@@ -829,11 +833,54 @@ describe('OpenCloud node', () => {
 					.reply(200, { value: [{ id: 'u-x', displayName: 'X' }] });
 			}
 			const { fns } = makeLoadOptionsFunctions({ currentParameters: {} });
-			const options = await node.methods.loadOptions.getRecipients.call(fns);
-			expect(options.length).toBeGreaterThan(0);
+			const result = await node.methods.listSearch.searchRecipients.call(fns);
+			expect(result.results.length).toBeGreaterThan(0);
 			if (!IS_INTEGRATION) {
-				expect(options.map((o) => o.value)).toEqual(['u-x']);
+				expect(result.results.map((o) => o.value)).toEqual(['u-x']);
 			}
+		});
+
+		it('narrows results when a filter string is provided', async () => {
+			if (!IS_INTEGRATION) {
+				nock(TEST_SERVER)
+					.get('/graph/v1.0/users')
+					.query({ $top: '100', $search: '"Alan"' })
+					.reply(200, {
+						value: [
+							{ id: 'u-alan', displayName: 'Alan Turing', mail: 'alan@example.com' },
+						],
+					});
+			}
+			const { fns } = makeLoadOptionsFunctions({
+				currentParameters: { recipientType: 'user' },
+			});
+			const result = await node.methods.listSearch.searchRecipients.call(fns, 'Alan');
+			expect(result.results.length).toBeGreaterThan(0);
+			// Every returned entry should match the filter (case-insensitive).
+			// In integration mode we hit the live server's $search, which matches
+			// across displayName / mail / onPremisesSamAccountName, so the filter
+			// substring must appear in at least one of the rendered fields.
+			for (const entry of result.results) {
+				expect((entry.name as string).toLowerCase()).toContain('alan');
+			}
+		});
+
+		mockOnly.it('passes filter through as $search and forwards nextLink as paginationToken', async () => {
+			nock(TEST_SERVER)
+				.get('/graph/v1.0/users')
+				.query({ $top: '100', $search: '"ali"' })
+				.reply(200, {
+					value: [{ id: 'u-1', displayName: 'Alice' }],
+					'@odata.nextLink': '/graph/v1.0/users?$top=100&$search=%22ali%22&$skiptoken=abc',
+				});
+			const { fns } = makeLoadOptionsFunctions({
+				currentParameters: { recipientType: 'user' },
+			});
+			const result = await node.methods.listSearch.searchRecipients.call(fns, 'ali');
+			expect(result.results.map((o) => o.value)).toEqual(['u-1']);
+			expect(result.paginationToken).toBe(
+				'/graph/v1.0/users?$top=100&$search=%22ali%22&$skiptoken=abc',
+			);
 		});
 	});
 

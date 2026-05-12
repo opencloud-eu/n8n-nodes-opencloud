@@ -4,6 +4,8 @@ import type {
 	IHttpRequestMethods,
 	ILoadOptionsFunctions,
 	INodeExecutionData,
+	INodeListSearchItems,
+	INodeListSearchResult,
 	INodePropertyOptions,
 	INodeType,
 	INodeTypeDescription,
@@ -671,15 +673,37 @@ export class OpenCloud implements INodeType {
 					'Optional password protecting the link. The server may require a password for certain link types; if so, the request fails with a clear hint to set this field.',
 			},
 			{
-				displayName: 'Recipient Name or ID',
+				displayName: 'Recipient',
 				name: 'recipientId',
-				type: 'options',
-				typeOptions: {
-					loadOptionsMethod: 'getRecipients',
-					loadOptionsDependsOn: ['recipientType'],
-				},
-				default: '',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
 				required: true,
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						typeOptions: {
+							searchListMethod: 'searchRecipients',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By ID',
+						name: 'id',
+						type: 'string',
+						placeholder: 'b1f74ec4-dd7e-11ef-a543-03775734d0f7',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^[0-9a-fA-F-]+$',
+									errorMessage: 'Recipient ID must be a GUID (hex digits and dashes)',
+								},
+							},
+						],
+					},
+				],
 				displayOptions: {
 					show: {
 						resource: ['file', 'folder', 'space'],
@@ -687,7 +711,8 @@ export class OpenCloud implements INodeType {
 						recipientType: ['user', 'group'],
 					},
 				},
-				description: 'User or group to invite. Listing requires admin permissions on the server. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+				description:
+					'User or group to invite. Search the directory (admin or matching the server\'s minimum search length for regular users), or paste a known ID.',
 			},
 			{
 				displayName: 'Role Name or ID',
@@ -742,37 +767,6 @@ export class OpenCloud implements INodeType {
 					name: `${drive.name} (${drive.driveType ?? 'drive'})`,
 					value: drive.id ?? '',
 				}));
-			},
-
-			async getRecipients(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
-				// Pick the directory endpoint based on whether the user is inviting
-				// a user or a group. Both endpoints require admin permissions; if the
-				// call fails (e.g. 403), n8n surfaces the error in the dropdown and
-				// the workflow author can switch to expression mode to type an ID.
-				const recipientType =
-					(this.getCurrentNodeParameter('recipientType') as string) || 'user';
-				// $top=100 caps the dropdown; large tenants should use expression
-				// mode with a known id rather than scrolling 10k entries.
-				const endpoint =
-					(recipientType === 'group' ? '/graph/v1.0/groups' : '/graph/v1.0/users') +
-					'?$top=100';
-				const response = (await openCloudApiRequest.call(
-					this,
-					'GET',
-					endpoint,
-					'',
-					{},
-					true,
-				)) as { value?: Array<{ id?: string; displayName?: string; onPremisesSamAccountName?: string }> };
-
-				return (response.value ?? [])
-					.filter((entry): entry is { id: string; displayName?: string; onPremisesSamAccountName?: string } =>
-						typeof entry.id === 'string' && entry.id.length > 0,
-					)
-					.map((entry) => ({
-						name: entry.displayName ?? entry.onPremisesSamAccountName ?? entry.id,
-						value: entry.id,
-					}));
 			},
 
 			async getLinkTypes(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
@@ -881,6 +875,70 @@ export class OpenCloud implements INodeType {
 						value: role.id,
 						description: role.description ?? undefined,
 					}));
+			},
+		},
+		listSearch: {
+			async searchRecipients(
+				this: ILoadOptionsFunctions,
+				filter?: string,
+				paginationToken?: string,
+			): Promise<INodeListSearchResult> {
+				// Pick the directory endpoint based on the sibling recipientType
+				// field. Both endpoints require admin permissions OR a search term
+				// meeting the server's IdentitySearchMinLength (typically 3); the
+				// search box on the resourceLocator naturally feeds $search.
+				const recipientType =
+					(this.getCurrentNodeParameter('recipientType') as string) || 'user';
+				const basePath =
+					recipientType === 'group' ? '/graph/v1.0/groups' : '/graph/v1.0/users';
+
+				const params: string[] = ['$top=100'];
+				if (filter && filter.trim().length > 0) {
+					params.push(`$search=${encodeURIComponent(`"${filter.trim()}"`)}`);
+				}
+				// paginationToken carries an opaque @odata.nextLink path between
+				// pages; honor it verbatim and ignore filter (the server preserves
+				// the original $search in the next-link URL).
+				const endpoint =
+					typeof paginationToken === 'string' && paginationToken.length > 0
+						? paginationToken
+						: `${basePath}?${params.join('&')}`;
+
+				const response = (await openCloudApiRequest.call(
+					this,
+					'GET',
+					endpoint,
+					'',
+					{},
+					true,
+				)) as {
+					value?: Array<{
+						id?: string;
+						displayName?: string;
+						onPremisesSamAccountName?: string;
+						mail?: string;
+					}>;
+					'@odata.nextLink'?: string;
+				};
+
+				const results: INodeListSearchItems[] = (response.value ?? [])
+					.filter(
+						(entry): entry is { id: string; displayName?: string; onPremisesSamAccountName?: string; mail?: string } =>
+							typeof entry.id === 'string' && entry.id.length > 0,
+					)
+					.map((entry) => {
+						const label = entry.displayName ?? entry.onPremisesSamAccountName ?? entry.id;
+						const hint = entry.mail ?? entry.onPremisesSamAccountName;
+						return {
+							name: hint && hint !== label ? `${label} (${hint})` : label,
+							value: entry.id,
+						};
+					});
+
+				return {
+					results,
+					paginationToken: response['@odata.nextLink'],
+				};
 			},
 		},
 	};
@@ -1328,7 +1386,14 @@ export class OpenCloud implements INodeType {
 						}
 					} else {
 						// recipientType is 'user' or 'group'
-						const recipientId = (this.getNodeParameter('recipientId', i) as string).trim();
+						// recipientId is a resourceLocator; extractValue: true unwraps
+						// {mode, value} to the bare id string. Bare strings still pass
+						// through for back-compat with existing test fixtures.
+						const recipientId = (
+							this.getNodeParameter('recipientId', i, '', {
+								extractValue: true,
+							}) as string
+						).trim();
 						const role = (this.getNodeParameter('role', i) as string).trim();
 
 						if (!recipientId) {
