@@ -707,17 +707,12 @@ describe('OpenCloud node', () => {
 		it('falls back to the full catalog when resource is not set', async () => {
 			const { fns } = makeLoadOptionsFunctions({ currentParameters: {} });
 			const options = await node.methods.loadOptions.getLinkTypes.call(fns);
-			expect(options.map((o) => o.value)).toEqual(
-				expect.arrayContaining(['view', 'edit', 'upload', 'createOnly', 'blocksDownload', 'internal']),
-			);
-		});
-
-		it('exposes internal link type across all resource kinds', async () => {
-			for (const resource of ['file', 'folder', 'space'] as const) {
-				const { fns } = makeLoadOptionsFunctions({ currentParameters: { resource } });
-				const options = await node.methods.loadOptions.getLinkTypes.call(fns);
-				expect(options.map((o) => o.value)).toContain('internal');
-			}
+			const values = options.map((o) => o.value);
+			expect(values).toEqual(expect.arrayContaining(['view', 'edit', 'upload', 'createOnly']));
+			// internal and blocksDownload aren't supported by OpenCloud and are
+			// excluded from the catalog even though the spec defines them.
+			expect(values).not.toContain('internal');
+			expect(values).not.toContain('blocksDownload');
 		});
 	});
 
@@ -1032,7 +1027,7 @@ describe('OpenCloud node', () => {
 			await expect(node.execute.call(fns)).rejects.toThrow(/Cross-storage move/);
 		});
 
-		mockOnly.it('share 400 + no password + non-internal → "set password" hint', async () => {
+		mockOnly.it('share 400 surfaces a password-policy hint', async () => {
 			const itemId = `${driveId}!report`;
 			nockChildrenWalk(
 				[{ id: `${driveId}!docs`, name: 'Documents', folder: {} }],
@@ -1050,9 +1045,10 @@ describe('OpenCloud node', () => {
 					linkType: 'view', password: '', expirationDateTime: '',
 				},
 			});
-			await expect(node.execute.call(fns)).rejects.toThrow(
-				/This link type requires a password on the server/,
-			);
+			await expect(node.execute.call(fns)).rejects.toMatchObject({
+				message: expect.stringMatching(/Public link rejected/),
+				description: expect.stringMatching(/password_policy/),
+			});
 		});
 
 		mockOnly.it('cross-space folder COPY (mock — depends on a second drive)', async () => {

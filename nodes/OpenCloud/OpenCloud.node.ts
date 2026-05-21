@@ -44,6 +44,7 @@ function spaceWebDavUrl(serverUrl: string, driveId: string, path: string): strin
 	return `${base}/dav/spaces/${encodeURIComponent(driveId)}${joinPath(splitPath(path))}`;
 }
 
+
 function lastSegment(path: string): string {
 	const segments = splitPath(path);
 	return segments.length === 0 ? '' : segments[segments.length - 1];
@@ -695,7 +696,7 @@ export class OpenCloud implements INodeType {
 					},
 				},
 				description:
-					'Optional password protecting the link. The server may require a password for certain link types; if so, the request fails with a clear hint to set this field.',
+					'Optional password protecting the link. The server may require a password and may enforce a password policy (see the `password_policy` capability).',
 			},
 			{
 				displayName: 'Recipient',
@@ -828,18 +829,6 @@ export class OpenCloud implements INodeType {
 						name: 'Create Only',
 						description: 'Recipients can add but not list (folder only)',
 						appliesTo: ['folder'],
-					},
-					{
-						value: 'blocksDownload',
-						name: 'Blocks Download',
-						description: 'View-only without download capability',
-						appliesTo: ['file', 'folder', 'space'],
-					},
-					{
-						value: 'internal',
-						name: 'Internal',
-						description: 'Internal link, no permissions granted',
-						appliesTo: ['file', 'folder', 'space'],
 					},
 				];
 
@@ -1347,36 +1336,24 @@ export class OpenCloud implements INodeType {
 								pairedItem: { item: i },
 							});
 						} catch (error) {
-							// The server returns 400 "password protection is enforced" when it
-							// requires a password for the chosen link type but none was sent. The
-							// detail message lives in the response body, which n8n's request stack
-							// often drops before our catch, so we can't reliably string-match.
-							// Use the HTTP status as the signal: with our pre-validated inputs
-							// (linkType from a closed dropdown, item already resolved), the only
-							// realistic 400 for a non-internal link with no password is password
-							// enforcement.
-							//
-							// NodeOperationError (not NodeApiError) on purpose: NodeApiError's
-							// constructor rewrites the surface message via httpCode COMMON_ERRORS
-							// mappings ("400" -> "Bad request"), clobbering our hint.
+							// The server returns 400 when a public-link password is missing
+							// or violates the configured policy. NodeOperationError (not
+							// NodeApiError) on purpose: NodeApiError's constructor rewrites
+							// the surface message via httpCode COMMON_ERRORS mappings
+							// ("400" -> "Bad request"), clobbering our hint.
 							const code = String(
 								(error as { httpCode?: unknown }).httpCode ??
 									(error as { statusCode?: unknown }).statusCode ??
 									(error as { cause?: { statusCode?: unknown } }).cause?.statusCode ??
 									'',
 							);
-							if (
-							code === '400' &&
-							!password &&
-							linkType !== 'internal' &&
-							(resource === 'file' || resource === 'folder')
-						) {
+							if (code === '400') {
 								throw new NodeOperationError(
 									this.getNode(),
-									'This link type requires a password on the server',
+									'Public link rejected: password requirement not met',
 									{
 										description:
-											'Set the Password field and retry. The server enforces a password for this link type.',
+											'The server may require a password for this link type and may enforce a password policy (min length, character classes, etc). See the `password_policy` and `files_sharing.public.password` capabilities for the exact rules.',
 										itemIndex: i,
 									},
 								);
