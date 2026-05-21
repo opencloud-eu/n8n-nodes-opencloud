@@ -9,6 +9,7 @@ import https from 'node:https';
 import type {
 	IExecuteFunctions,
 	IHttpRequestOptions,
+	ILoadOptionsFunctions,
 	INode,
 } from 'n8n-workflow';
 
@@ -97,6 +98,44 @@ export async function getPersonalDriveId(): Promise<string> {
 }
 
 /**
+ * Builds the axios-backed `httpRequestWithAuthentication` mock shared by both
+ * IExecuteFunctions and ILoadOptionsFunctions helper factories. Nock intercepts
+ * at the wire in mock mode; integration mode reaches the real backend.
+ *
+ * Honors `encoding: 'arraybuffer'` so binary downloads return a Buffer.
+ */
+function buildRequestSpy() {
+	return vi.fn(async (_credType: string, options: IHttpRequestOptions) => {
+		const axiosConfig: AxiosRequestConfig = {
+			method: options.method,
+			url: options.url,
+			headers: { ...(options.headers as Record<string, string>) },
+			params: options.qs,
+			data: options.body,
+			auth: { username: credentials.user, password: credentials.password },
+			validateStatus: () => true,
+			httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+		};
+		if (options.encoding) axiosConfig.responseType = options.encoding as ResponseType;
+
+		const res = await axios.request(axiosConfig);
+
+		if (res.status >= 200 && res.status < 300) {
+			if (options.encoding === 'arraybuffer') return Buffer.from(res.data as ArrayBuffer);
+			return res.data;
+		}
+
+		const inner = (res.data as { error?: { message?: string } })?.error?.message;
+		const e: Error & { httpCode?: number; description?: string } = new Error(
+			`HTTP ${res.status}`,
+		);
+		e.httpCode = res.status;
+		if (inner) e.description = inner;
+		throw e;
+	});
+}
+
+/**
  * Builds a mocked IExecuteFunctions wired to fire real axios calls, so nock
  * intercepts at the wire (mock mode) or requests pass through to the real
  * backend (integration mode).
@@ -109,9 +148,16 @@ export function makeExecuteFunctions(opts: {
 	const fns = mock<IExecuteFunctions>();
 
 	fns.getNodeParameter.mockImplementation(
-		(name: string, _itemIndex: number, fallback?: unknown) => {
-			if (name in opts.parameters) return opts.parameters[name];
-			return fallback;
+		(name: string, _itemIndex: number, fallback?: unknown, options?: { extractValue?: boolean }) => {
+			if (!(name in opts.parameters)) return fallback;
+			const raw = opts.parameters[name];
+			// Mirror n8n's runtime behavior: with extractValue: true, a
+			// resourceLocator-shaped value ({__rl, mode, value}) unwraps to .value.
+			// Bare strings pass through unchanged.
+			if (options?.extractValue && raw !== null && typeof raw === 'object' && (raw as { __rl?: boolean }).__rl === true) {
+				return (raw as { value?: unknown }).value;
+			}
+			return raw;
 		},
 	);
 
@@ -141,34 +187,7 @@ export function makeExecuteFunctions(opts: {
 		parameters: {},
 	} as INode);
 
-	const requestSpy = vi.fn(async (_credType: string, options: IHttpRequestOptions) => {
-		const axiosConfig: AxiosRequestConfig = {
-			method: options.method,
-			url: options.url,
-			headers: { ...(options.headers as Record<string, string>) },
-			params: options.qs,
-			data: options.body,
-			auth: { username: credentials.user, password: credentials.password },
-			validateStatus: () => true,
-			httpsAgent: new https.Agent({ rejectUnauthorized: false }),
-		};
-		if (options.encoding) axiosConfig.responseType = options.encoding as ResponseType;
-
-		const res = await axios.request(axiosConfig);
-
-		if (res.status >= 200 && res.status < 300) {
-			if (options.encoding === 'arraybuffer') return Buffer.from(res.data as ArrayBuffer);
-			return res.data;
-		}
-
-		const inner = (res.data as { error?: { message?: string } })?.error?.message;
-		const e: Error & { httpCode?: number; description?: string } = new Error(
-			`HTTP ${res.status}`,
-		);
-		e.httpCode = res.status;
-		if (inner) e.description = inner;
-		throw e;
-	});
+	const requestSpy = buildRequestSpy();
 
 	const helpers = {
 		httpRequestWithAuthentication: requestSpy,
@@ -186,6 +205,41 @@ export function makeExecuteFunctions(opts: {
 		}),
 	};
 	(fns as unknown as { helpers: typeof helpers }).helpers = helpers;
+
+	return { fns, requestSpy };
+}
+
+/**
+ * Builds a mocked ILoadOptionsFunctions for testing loadOptions methods
+ * (getShareRoles, getRecipients, etc). Wires the same axios-backed request
+ * spy as makeExecuteFunctions so nock intercepts at the wire.
+ *
+ * `currentParameters` populates `getCurrentNodeParameter` (the n8n API
+ * loadOptions uses to read sibling fields like the current resource type or
+ * recipient type).
+ */
+export function makeLoadOptionsFunctions(opts: {
+	currentParameters?: Record<string, unknown>;
+}) {
+	const fns = mock<ILoadOptionsFunctions>();
+
+	fns.getCurrentNodeParameter.mockImplementation((name: string) => {
+		return opts.currentParameters?.[name];
+	});
+	fns.getCredentials.mockResolvedValue(credentials);
+	fns.getNode.mockReturnValue({
+		id: 'test-node',
+		name: 'OpenCloud',
+		type: '@opencloud-eu/n8n-nodes-opencloud.openCloud',
+		typeVersion: 1,
+		position: [0, 0],
+		parameters: {},
+	} as INode);
+
+	const requestSpy = buildRequestSpy();
+	(fns as unknown as { helpers: { httpRequestWithAuthentication: typeof requestSpy } }).helpers = {
+		httpRequestWithAuthentication: requestSpy,
+	};
 
 	return { fns, requestSpy };
 }
