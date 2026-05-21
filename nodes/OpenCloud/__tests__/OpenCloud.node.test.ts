@@ -77,30 +77,31 @@ describe('OpenCloud node', () => {
 		it('create → list → delete a folder under tmp root', async () => {
 			const folderName = `folder-${Date.now()}`;
 			const folderPath = tmpPath(folderName);
+			const parentItemId = `${driveId}!parent`;
+			const subItemId = `${driveId}!sub`;
 
 			// Create
 			if (!IS_INTEGRATION) {
 				nock(TEST_SERVER)
-					.intercept(`/dav/spaces/${driveIdEnc}${encodePath(TMP_ROOT)}`, 'MKCOL')
-					.optionally()
-					.reply(201)
 					.intercept(`/dav/spaces/${driveIdEnc}${encodePath(folderPath)}`, 'MKCOL')
 					.reply(201);
+				// Post-MKCOL path-walk resolves the new folder to a driveItem.
+				nockChildrenWalk(
+					[{ id: parentItemId, name: TMP_ROOT.slice(1), folder: {} }],
+					[{ id: subItemId, name: folderName, folder: {} }],
+				);
 			}
-			// Make sure the parent exists in integration mode (idempotent).
 			if (IS_INTEGRATION) await ensureFolder(driveId, TMP_ROOT);
-			const created = await runCreate(driveId, '', TMP_ROOT.slice(1)).catch(() => null); // ok if exists
-			void created;
 			const createdSub = await runCreate(driveId, TMP_ROOT, folderName);
-			expect(createdSub).toMatchObject({ success: true, name: folderName });
+			expect(createdSub).toMatchObject({ name: folderName, folder: {} });
+			expect(typeof createdSub.id).toBe('string');
 
 			// List parent — folder should appear
 			if (!IS_INTEGRATION) {
-				// Mock the path-walk + children listing
-				nockChildrenWalk([{ id: `${driveId}!parent`, name: TMP_ROOT.slice(1), folder: {} }]);
+				nockChildrenWalk([{ id: parentItemId, name: TMP_ROOT.slice(1), folder: {} }]);
 				nock(TEST_SERVER)
-					.get(`/graph/v1.0/drives/${driveIdEnc}/items/${encodeURIComponent(`${driveId}!parent`)}/children`)
-					.reply(200, { value: [{ id: 'child', name: folderName, folder: {} }] });
+					.get(`/graph/v1.0/drives/${driveIdEnc}/items/${encodeURIComponent(parentItemId)}/children`)
+					.reply(200, { value: [{ id: subItemId, name: folderName, folder: {} }] });
 			}
 			const { fns: listFns } = makeExecuteFunctions({
 				parameters: { resource: 'folder', operation: 'list', space: driveId, path: TMP_ROOT },
@@ -117,7 +118,7 @@ describe('OpenCloud node', () => {
 				parameters: { resource: 'folder', operation: 'delete', space: driveId, path: folderPath },
 			});
 			const deleted = await node.execute.call(delFns);
-			expect(deleted[0][0].json).toMatchObject({ success: true, path: folderPath });
+			expect(deleted[0][0].json).toEqual({});
 		});
 	});
 
@@ -130,11 +131,17 @@ describe('OpenCloud node', () => {
 			if (IS_INTEGRATION) await ensureFolder(driveId, TMP_ROOT);
 
 			// Upload
+			const parentItemId = `${driveId}!parent`;
+			const fileItemId = `${driveId}!file`;
 			if (!IS_INTEGRATION) {
 				nock(TEST_SERVER)
 					.put(`/dav/spaces/${driveIdEnc}${encodePath(filePath)}`, content)
 					.matchHeader('Content-Type', 'text/plain; charset=utf-8')
 					.reply(201);
+				nockChildrenWalk(
+					[{ id: parentItemId, name: TMP_ROOT.slice(1), folder: {} }],
+					[{ id: fileItemId, name: fileName, file: { mimeType: 'text/plain' } }],
+				);
 			}
 			const uploaded = await runOnceJson({
 				resource: 'file',
@@ -145,9 +152,10 @@ describe('OpenCloud node', () => {
 				binaryDataUpload: false,
 				fileContent: content,
 			});
-			expect(uploaded).toMatchObject({ success: true, name: fileName });
+			expect(uploaded).toMatchObject({ name: fileName, file: { mimeType: 'text/plain' } });
+			expect(typeof uploaded.id).toBe('string');
 
-			// Download
+			// Download mirrors MS Graph GET /content: bytes only, no driveItem in json.
 			if (!IS_INTEGRATION) {
 				nock(TEST_SERVER)
 					.get(`/dav/spaces/${driveIdEnc}${encodePath(filePath)}`)
@@ -191,6 +199,10 @@ describe('OpenCloud node', () => {
 					.put(`/dav/spaces/${driveIdEnc}${encodePath(filePath)}`)
 					.matchHeader('Content-Type', 'application/octet-stream')
 					.reply(201);
+				nockChildrenWalk(
+					[{ id: `${driveId}!parent`, name: TMP_ROOT.slice(1), folder: {} }],
+					[{ id: `${driveId}!img`, name: fileName, file: { mimeType: 'image/png' } }],
+				);
 			}
 			const { fns } = makeExecuteFunctions({
 				parameters: {
@@ -234,17 +246,26 @@ describe('OpenCloud node', () => {
 					.intercept(`/dav/spaces/${driveIdEnc}${encodePath(srcPath)}`, 'COPY')
 					.matchHeader('Destination', `${TEST_SERVER}/dav/spaces/${driveIdEnc}${encodePath(copyPath)}`)
 					.reply(201);
+				nockChildrenWalk(
+					[{ id: `${driveId}!parent`, name: TMP_ROOT.slice(1), folder: {} }],
+					[{ id: `${driveId}!copy`, name: 'copy.txt', file: { mimeType: 'text/plain' } }],
+				);
 			}
-			await runOnceJson({
+			const copied = await runOnceJson({
 				resource: 'file', operation: 'copy', space: driveId,
 				path: srcPath, destSpace: '', destParentPath: TMP_ROOT, destName: 'copy.txt',
 			});
+			expect(copied).toMatchObject({ name: 'copy.txt', file: { mimeType: 'text/plain' } });
 
 			if (!IS_INTEGRATION) {
 				nock(TEST_SERVER)
 					.intercept(`/dav/spaces/${driveIdEnc}${encodePath(copyPath)}`, 'MOVE')
 					.matchHeader('Destination', `${TEST_SERVER}/dav/spaces/${driveIdEnc}${encodePath(renamedPath)}`)
 					.reply(201);
+				nockChildrenWalk(
+					[{ id: `${driveId}!parent`, name: TMP_ROOT.slice(1), folder: {} }],
+					[{ id: `${driveId}!ren`, name: 'renamed.txt', file: { mimeType: 'text/plain' } }],
+				);
 			}
 			await runOnceJson({
 				resource: 'file', operation: 'move', space: driveId,
@@ -364,7 +385,7 @@ describe('OpenCloud node', () => {
 					.get(`/graph/v1.0/users/${userId}`)
 					.reply(200, { id: userId, displayName: 'n8n Test User', onPremisesSamAccountName: userName, mail: email })
 					.patch(`/graph/v1.0/users/${userId}`, { displayName: 'Renamed' })
-					.reply(204)
+					.reply(200, { id: userId, displayName: 'Renamed', onPremisesSamAccountName: userName, mail: email })
 					.delete(`/graph/v1.0/users/${userId}`)
 					.reply(204);
 			}
@@ -389,22 +410,23 @@ describe('OpenCloud node', () => {
 			})) as { id?: string; onPremisesSamAccountName?: string };
 			expect(fetched.id).toBe(created.id);
 
-			// Update
+			// Update (Libre Graph returns the updated user; we pass it through).
 			const updated = (await runOnceJson({
 				resource: 'user',
 				operation: 'update',
 				userId: created.id,
 				updateFields: { displayName: 'Renamed' },
-			})) as { success?: boolean };
-			expect(updated.success).toBe(true);
+			})) as { id?: string; displayName?: string };
+			expect(updated.id).toBe(created.id);
+			if (!IS_INTEGRATION) expect(updated.displayName).toBe('Renamed');
 
-			// Delete
-			const deleted = (await runOnceJson({
+			// Delete (Libre Graph returns 204 No Content; we expose {}).
+			const deleted = await runOnceJson({
 				resource: 'user',
 				operation: 'delete',
 				userId: created.id,
-			})) as { success?: boolean };
-			expect(deleted.success).toBe(true);
+			});
+			expect(deleted).toEqual({});
 		});
 	});
 
@@ -451,15 +473,21 @@ describe('OpenCloud node', () => {
 		});
 
 		mockOnly.it('cross-space folder COPY (mock — depends on a second drive)', async () => {
-			const otherDriveEnc = encodeURIComponent('storage-users-2$other-space-id');
+			const otherDriveId = 'storage-users-2$other-space-id';
+			const otherDriveEnc = encodeURIComponent(otherDriveId);
 			nock(TEST_SERVER)
 				.intercept(`/dav/spaces/${driveIdEnc}/Documents/Reports`, 'COPY')
 				.matchHeader('Destination', `${TEST_SERVER}/dav/spaces/${otherDriveEnc}/Shared/Reports`)
-				.reply(201);
+				.reply(201)
+				// Post-COPY path-walk on the destination drive.
+				.get(`/graph/v1.0/drives/${otherDriveEnc}/items/${otherDriveEnc}/children`)
+				.reply(200, { value: [{ id: `${otherDriveId}!shared`, name: 'Shared', folder: {} }] })
+				.get(`/graph/v1.0/drives/${otherDriveEnc}/items/${encodeURIComponent(`${otherDriveId}!shared`)}/children`)
+				.reply(200, { value: [{ id: `${otherDriveId}!reports`, name: 'Reports', folder: {} }] });
 			await runOnceJson({
 				resource: 'folder', operation: 'copy', space: driveId,
 				path: '/Documents/Reports',
-				destSpace: 'storage-users-2$other-space-id',
+				destSpace: otherDriveId,
 				destParentPath: '/Shared', destName: '',
 			});
 		});
