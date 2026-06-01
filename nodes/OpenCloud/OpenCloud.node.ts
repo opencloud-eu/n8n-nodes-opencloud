@@ -1131,7 +1131,7 @@ export class OpenCloud implements INodeType {
 								'',
 							);
 							if (httpCode === '405') continue;
-							throw error;
+							throw new NodeApiError(this.getNode(), error as JsonObject, { itemIndex: i });
 						}
 					}
 
@@ -1267,14 +1267,22 @@ export class OpenCloud implements INodeType {
 							'',
 						);
 						if (operation === 'move' && httpCode === '502') {
-							throw new NodeApiError(this.getNode(), error as JsonObject, {
-								message: 'Cross-storage move not supported',
-								description:
-									'OpenCloud cannot move items between different storage providers. Use Copy followed by Delete instead.',
-								itemIndex: i,
-							});
+							// NodeOperationError (not NodeApiError) on purpose: if the helper
+							// ever throws a NodeApiError directly, NodeApiError's constructor
+							// short-circuits on instanceof and silently drops our custom
+							// message. NodeOperationError has no such guard, so the message
+							// survives in both mock and real-helper paths.
+							throw new NodeOperationError(
+								this.getNode(),
+								'Cross-storage move not supported',
+								{
+									description:
+										'OpenCloud cannot move items between different storage providers. Use Copy followed by Delete instead.',
+									itemIndex: i,
+								},
+							);
 						}
-						throw error;
+						throw new NodeApiError(this.getNode(), error as JsonObject, { itemIndex: i });
 					}
 
 					// Both move and copy return the destination driveItem. MS Graph's
@@ -1358,7 +1366,7 @@ export class OpenCloud implements INodeType {
 									},
 								);
 							}
-							throw error;
+							throw new NodeApiError(this.getNode(), error as JsonObject, { itemIndex: i });
 						}
 					} else {
 						// recipientType is 'user' or 'group'
@@ -1457,7 +1465,12 @@ export class OpenCloud implements INodeType {
 					});
 					continue;
 				}
-				throw error;
+				// Inner handlers raise NodeApiError / NodeOperationError; only wrap
+				// when something escaped untyped (defence-in-depth for future ops).
+				if (error instanceof NodeApiError || error instanceof NodeOperationError) {
+					throw error as NodeApiError | NodeOperationError;
+				}
+				throw new NodeApiError(this.getNode(), error as JsonObject, { itemIndex: i });
 			}
 		}
 

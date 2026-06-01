@@ -143,6 +143,12 @@ export async function openCloudApiRequest<T = unknown>(
 				},
 			);
 		}
+		// Preserve the helper's original error (httpCode, message) so call sites
+		// can branch on the status and wrap with their own semantic NodeApiError /
+		// NodeOperationError. Wrapping here in NodeApiError would short-circuit
+		// re-wrapping at the call site (its constructor returns the existing
+		// instance untouched).
+		// eslint-disable-next-line @n8n/community-nodes/require-node-api-error
 		throw error;
 	}
 }

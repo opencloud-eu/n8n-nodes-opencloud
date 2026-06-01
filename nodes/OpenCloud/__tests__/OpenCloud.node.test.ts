@@ -335,6 +335,8 @@ describe('OpenCloud node', () => {
 				// throws our "set password" hint. That's a server-policy fact, not a
 				// node bug — accept it as a pass for integration mode.
 				if (IS_INTEGRATION && /password/i.test((err as Error).message)) return;
+				// Test helper: propagate the assertion failure as-is.
+				// eslint-disable-next-line @n8n/community-nodes/require-node-api-error
 				throw err;
 			}
 			expect(result![0][0].json).toMatchObject({
@@ -962,6 +964,8 @@ describe('OpenCloud node', () => {
 					);
 					return;
 				}
+				// Test helper: propagate the assertion failure as-is.
+				// eslint-disable-next-line @n8n/community-nodes/require-node-api-error
 				throw err;
 			} finally {
 				if (IS_INTEGRATION && targetSpaceId !== driveId) {
