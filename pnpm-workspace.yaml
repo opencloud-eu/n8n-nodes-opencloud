@@ -1,2 +1,7 @@
 autoInstallPeers: true
 shamefullyHoist: true
+allowBuilds:
+  esbuild: true
+  eslint-plugin-n8n-nodes-base: true
+  isolated-vm: true
+  unrs-resolver: true
