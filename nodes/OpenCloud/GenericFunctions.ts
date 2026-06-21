@@ -5,6 +5,7 @@ import type {
 	IHttpRequestMethods,
 	IHttpRequestOptions,
 	ILoadOptionsFunctions,
+	IPollFunctions,
 } from 'n8n-workflow';
 import { NodeOperationError } from 'n8n-workflow';
 
@@ -92,7 +93,7 @@ export interface RoleDefinition {
  * Buffer in that case. Otherwise responses are JSON-parsed when `json: true`.
  */
 export async function openCloudApiRequest<T = unknown>(
-	this: IExecuteFunctions | IHookFunctions | ILoadOptionsFunctions,
+	this: IExecuteFunctions | IHookFunctions | ILoadOptionsFunctions | IPollFunctions,
 	method: IHttpRequestMethods,
 	urlOrPath: string,
 	body: IDataObject | string | Buffer = '',

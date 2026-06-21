@@ -7,10 +7,13 @@ import nock from 'nock';
 import axios, { type AxiosRequestConfig, type ResponseType } from 'axios';
 import https from 'node:https';
 import type {
+	IDataObject,
 	IExecuteFunctions,
 	IHttpRequestOptions,
 	ILoadOptionsFunctions,
 	INode,
+	IPollFunctions,
+	WorkflowExecuteMode,
 } from 'n8n-workflow';
 
 /**
@@ -242,6 +245,64 @@ export function makeLoadOptionsFunctions(opts: {
 	};
 
 	return { fns, requestSpy };
+}
+
+/**
+ * Builds a mocked IPollFunctions for testing a polling trigger's poll() method.
+ * Same axios-backed request spy as the other factories (nock intercepts at the
+ * wire). `mode` selects manual vs scheduled; `staticData` is the persisted
+ * workflow static-data object. Pass the SAME object across poll() calls to
+ * exercise de-duplication across runs.
+ */
+export function makePollFunctions(opts: {
+	parameters: Record<string, unknown>;
+	mode?: WorkflowExecuteMode;
+	staticData?: IDataObject;
+}) {
+	const fns = mock<IPollFunctions>();
+	const staticData: IDataObject = opts.staticData ?? {};
+
+	// IPollFunctions.getNodeParameter signature is (name, fallback?, options?) with
+	// no itemIndex. Mirror n8n's extractValue unwrap of a resourceLocator value.
+	fns.getNodeParameter.mockImplementation(
+		(name: string, fallback?: unknown, options?: { extractValue?: boolean }) => {
+			if (!(name in opts.parameters)) return fallback;
+			const raw = opts.parameters[name];
+			if (options?.extractValue && raw !== null && typeof raw === 'object' && (raw as { __rl?: boolean }).__rl === true) {
+				return (raw as { value?: unknown }).value;
+			}
+			return raw;
+		},
+	);
+	fns.getMode.mockReturnValue(opts.mode ?? 'trigger');
+	fns.getWorkflowStaticData.mockReturnValue(staticData);
+	fns.getCredentials.mockResolvedValue(credentials);
+	// Real IPollFunctions always exposes a logger; the auto-mock doesn't stub the
+	// nested object, so provide it for code paths that emit diagnostics.
+	(fns as unknown as { logger: Record<string, ReturnType<typeof vi.fn>> }).logger = {
+		warn: vi.fn(),
+		info: vi.fn(),
+		debug: vi.fn(),
+		error: vi.fn(),
+	};
+	fns.getNode.mockReturnValue({
+		id: 'test-node',
+		name: 'OpenCloud Trigger',
+		type: '@opencloud-eu/n8n-nodes-opencloud.openCloudTrigger',
+		typeVersion: 1,
+		position: [0, 0],
+		parameters: {},
+	} as INode);
+
+	const requestSpy = buildRequestSpy();
+	const helpers = {
+		httpRequestWithAuthentication: requestSpy,
+		returnJsonArray: (items: IDataObject | IDataObject[]) =>
+			(Array.isArray(items) ? items : [items]).map((json) => ({ json })),
+	};
+	(fns as unknown as { helpers: typeof helpers }).helpers = helpers;
+
+	return { fns, requestSpy, staticData };
 }
 
 /**

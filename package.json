@@ -42,7 +42,8 @@
 			"dist/credentials/OpenCloudApi.credentials.js"
 		],
 		"nodes": [
-			"dist/nodes/OpenCloud/OpenCloud.node.js"
+			"dist/nodes/OpenCloud/OpenCloud.node.js",
+			"dist/nodes/OpenCloudTrigger/OpenCloudTrigger.node.js"
 		]
 	},
 	"devDependencies": {
