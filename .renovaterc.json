@@ -5,12 +5,30 @@
   "prConcurrentLimit": 5,
   "postUpdateOptions": ["pnpmDedupe"],
   "labels": ["Type:Dependencies"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Update the OpenCloud image default tag in docker-compose.yml",
+      "managerFilePatterns": ["/(^|/)docker-compose\\.ya?ml$/"],
+      "matchStrings": [
+        "image:\\s*(?<depName>opencloudeu/opencloud-rolling):\\$\\{OC_VERSION:-(?<currentValue>[^}]+)\\}"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
   "packageRules": [
     {
       "matchDepTypes": ["devDependencies"],
       "matchUpdateTypes": ["patch", "minor"],
       "groupName": "devDependencies (non-major)",
       "groupSlug": "dev-dependencies"
+    },
+    {
+      "description": "OpenCloud image: update without release-age delay and request review",
+      "matchDatasources": ["docker"],
+      "matchPackageNames": ["opencloudeu/opencloud-rolling"],
+      "minimumReleaseAge": "0",
+      "reviewers": ["v-scharf"]
     }
   ]
 }
