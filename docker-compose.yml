@@ -88,7 +88,7 @@ services:
   # on public shares, demo users seeded.
   opencloud:
     profiles: ['ci']
-    image: opencloudeu/opencloud-rolling:${OC_VERSION:-6.2.0}
+    image: opencloudeu/opencloud-rolling:${OC_VERSION:-7.3.0}
     user: '1000:1000'
     entrypoint: ['/bin/sh']
     command: ['-c', 'opencloud init || true; opencloud server']
