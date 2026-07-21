@@ -449,11 +449,25 @@ export class OpenCloud implements INodeType {
 					'The OpenCloud space (drive) to operate in. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
 				displayOptions: {
 					show: {
-						resource: ['folder', 'file', 'space'],
+						resource: ['folder', 'file'],
 					},
-					hide: {
+				},
+			},
+			{
+				displayName: 'Space Name or ID',
+				name: 'space',
+				type: 'options',
+				typeOptions: {
+					loadOptionsMethod: 'getSpaces',
+				},
+				default: '',
+				required: true,
+				description:
+					'The OpenCloud space (drive) to operate in. Choose from the list, or specify an ID using an <a href="https://docs.n8n.io/code/expressions/">expression</a>.',
+				displayOptions: {
+					show: {
 						resource: ['space'],
-						operation: ['list'],
+						operation: ['share'],
 					},
 				},
 			},

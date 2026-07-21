@@ -1,7 +1,7 @@
 {
   "name": "OpenCloud \u2014 End-to-end smoke test",
   "meta": {
-    "description": "**Opt-in live integration test.** Exercises every OpenCloud node operation against a real OpenCloud server. The repo test suite uses mocked HTTP via nock and runs in CI; this workflow is for manual end-to-end verification.\n\nBefore running:\n  1. Create an OpenCloud credential in n8n (Settings \u2192 Credentials). For local Docker dev, the typical URL is https://host.docker.internal:9200.\n  2. Patch this workflow with your credential id:\n       ./examples/apply-credentials.sh <credential-id> > /tmp/smoke.json\n     and import /tmp/smoke.json. Or import as-is and pick the credential on every node manually.\n\nNo drive id needed \u2014 the Resolve-space step calls /graph/v1.0/me/drives via the Space:List operation and the Config Code node picks the personal drive automatically. Works against any backend.\n\nWhat it does (in order):\n  0. Cleanup any pre-existing /n8n-smoke from a prior run (idempotent re-runs)\n  1. Create /n8n-smoke folder\n  2. Generate test bytes\n  3. Upload as /n8n-smoke/hello.txt\n  4. List /n8n-smoke\n  5. Download /n8n-smoke/hello.txt\n  6. Create /n8n-smoke/archive subfolder\n  7. Copy hello.txt \u2192 archive/copy.txt\n  8. Move archive/copy.txt \u2192 archive/renamed.txt\n  9. Create a public share link for hello.txt\n 10. Delete hello.txt\n 11. Delete /n8n-smoke (cleanup)\n\nEach OpenCloud node has continueOnFail=true so a failure in one step does not break the rest. Step 12 (Verify results) aggregates errors and prints actionable detail (e.g. password-policy hints)."
+    "description": "**Opt-in live integration test.** Exercises every OpenCloud node operation against a real OpenCloud server. The repo test suite uses mocked HTTP via nock and runs in CI; this workflow is for manual end-to-end verification.\n\nBefore running:\n  1. Create an OpenCloud credential in n8n (Settings \u2192 Credentials). For local Docker dev, the typical URL is https://host.docker.internal:9200.\n  2. Patch this workflow with your credential id:\n       ./examples/apply-credentials.sh <credential-id> > /tmp/smoke.json\n     and import /tmp/smoke.json. Or import as-is and pick the credential on every node manually.\n\nNo drive id needed \u2014 the Resolve-space step calls /graph/v1.0/me/drives via the Space:List operation and the Config Code node picks the personal drive automatically. Works against any backend.\n\nWhat it does (in order):\n  0. Cleanup any pre-existing /n8n-smoke from a prior run (idempotent re-runs)\n  1. Create /n8n-smoke folder\n  2. Generate test bytes\n  3. Upload as /n8n-smoke/hello.txt\n  4. List /n8n-smoke\n  5. Download /n8n-smoke/hello.txt\n  6. Create /n8n-smoke/archive subfolder\n  7. Copy hello.txt \u2192 archive/copy.txt\n  8. Move archive/copy.txt \u2192 archive/renamed.txt\n  8a. Copy the archive folder → /n8n-smoke/archive-copy\n  8b. Move (rename) archive-copy → /n8n-smoke/archive-moved\n  8c. Create a public share link for the /n8n-smoke/archive folder\n  9. Create a public share link for hello.txt\n 10. Delete hello.txt\n 11. Delete /n8n-smoke (cleanup)\n\nA parallel branch exercises user management: create → get → rename → get-many → delete.\n\nA third branch covers project spaces: it provisions a project space (via the HTTP Request node — the OpenCloud node has no space:create), then runs folder:create, file:upload, file:copy and public-link shares (file + space) against it. It also creates a throwaway recipient user and exercises the invite path — file, folder and space shared TO a user (recipientType=user) — then deletes that user, and finally disables + purges the space. space:share needs a project space — a personal drive root rejects it with \"unsupported space type\" — which is why it lives here and not in the personal-drive branch. It also creates a throwaway group (again via the HTTP Request node — no group:create on the node) and shares the folder and space TO that group, then deletes the group.\n\nEach OpenCloud node has continueOnFail=true so one failing step does not abort the rest; the final Verify step aggregates per-step results and THROWS when any non-ignored step failed, so the execution (and the e2e assertion) fails loudly on a regression."
   },
   "nodes": [
     {
@@ -227,6 +227,87 @@
     },
     {
       "parameters": {
+        "resource": "folder",
+        "operation": "copy",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder + '/archive' }}",
+        "destSpace": "",
+        "destParentPath": "={{ $('Config').first().json.rootFolder }}",
+        "destName": "archive-copy"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        2200,
+        480
+      ],
+      "id": "folder-copy",
+      "name": "8a. Copy folder → archive-copy",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "move",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder + '/archive-copy' }}",
+        "destSpace": "",
+        "destParentPath": "={{ $('Config').first().json.rootFolder }}",
+        "destName": "archive-moved"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        480
+      ],
+      "id": "folder-move",
+      "name": "8b. Move folder → archive-moved",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "share",
+        "space": "={{ $('Config').first().json.spaceId }}",
+        "path": "={{ $('Config').first().json.rootFolder + '/archive' }}",
+        "recipientType": "publicLink",
+        "linkType": "view",
+        "password": "",
+        "expirationDateTime": ""
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        2600,
+        480
+      ],
+      "id": "folder-share",
+      "name": "8c. Share folder link",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "Public link for the /n8n-smoke/archive folder. If the server enforces a password for public links, set the Password field.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
         "resource": "file",
         "operation": "share",
         "space": "={{ $('Config').first().json.spaceId }}",
@@ -301,7 +382,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Aggregates each upstream OpenCloud step's output and reports pass/fail per step.\n// A step that returned `{ error: '...' }` (continueOnFail) is reported as failed,\n// otherwise pass. Surface the actual error message AND the server-detail\n// description (e.g. password complexity hints) for any step that failed.\nconst steps = [\n\t['0. Cleanup any pre-existing /n8n-smoke', true],\n\t['1. Create /n8n-smoke', false],\n\t['3. Upload hello.txt', false],\n\t['4. List /n8n-smoke', false],\n\t['5. Download hello.txt', false],\n\t['6. Create archive subfolder', false],\n\t['7. Copy \u2192 archive/copy.txt', false],\n\t['8. Rename \u2192 renamed.txt', false],\n\t['9. Create share link', false],\n\t['10. Delete hello.txt', false],\n\t['11. Delete /n8n-smoke (cleanup)', false],\n];\n\nconst results = [];\nlet failures = 0;\n\nfor (const [name, ignoreError] of steps) {\n\ttry {\n\t\tconst out = $(name).first()?.json ?? {};\n\t\tconst error = typeof out.error === 'string' ? out.error : null;\n\t\tconst description = typeof out.errorDescription === 'string' ? out.errorDescription : null;\n\t\tconst pass = !error;\n\t\tif (!pass && !ignoreError) failures++;\n\t\tresults.push({\n\t\t\tstep: name,\n\t\t\tpass,\n\t\t\t...(error ? { error } : {}),\n\t\t\t...(description ? { errorDescription: description } : {}),\n\t\t\t...(ignoreError && error ? { ignored: true } : {}),\n\t\t});\n\t} catch (e) {\n\t\tresults.push({ step: name, pass: false, error: 'no upstream output: ' + e.message });\n\t\tif (!ignoreError) failures++;\n\t}\n}\n\nreturn [{ json: { failures, totalCounted: steps.filter(([, ignore]) => !ignore).length, results } }];"
+        "jsCode": "// Aggregates each upstream OpenCloud step's output and reports pass/fail per step.\n// A step that returned `{ error: '...' }` (continueOnFail) is reported as failed,\n// otherwise pass. Surface the actual error message AND the server-detail\n// description (e.g. password complexity hints) for any step that failed.\nconst steps = [\n\t['0. Cleanup any pre-existing /n8n-smoke', true],\n\t['1. Create /n8n-smoke', false],\n\t['3. Upload hello.txt', false],\n\t['4. List /n8n-smoke', false],\n\t['5. Download hello.txt', false],\n\t['6. Create archive subfolder', false],\n\t['7. Copy \u2192 archive/copy.txt', false],\n\t['8. Rename \u2192 renamed.txt', false],\n\t['8a. Copy folder \u2192 archive-copy', false],\n\t['8b. Move folder \u2192 archive-moved', false],\n\t['8c. Share folder link', false],\n\t['9. Create share link', false],\n\t['10. Delete hello.txt', false],\n\t['11. Delete /n8n-smoke (cleanup)', false],\n];\n\nconst results = [];\nlet failures = 0;\n\nfor (const [name, ignoreError] of steps) {\n\ttry {\n\t\tconst out = $(name).first()?.json ?? {};\n\t\tconst error = typeof out.error === 'string' ? out.error : null;\n\t\tconst description = typeof out.errorDescription === 'string' ? out.errorDescription : null;\n\t\tconst pass = !error;\n\t\tif (!pass && !ignoreError) failures++;\n\t\tresults.push({\n\t\t\tstep: name,\n\t\t\tpass,\n\t\t\t...(error ? { error } : {}),\n\t\t\t...(description ? { errorDescription: description } : {}),\n\t\t\t...(ignoreError && error ? { ignored: true } : {}),\n\t\t});\n\t} catch (e) {\n\t\tresults.push({ step: name, pass: false, error: 'no upstream output: ' + e.message });\n\t\tif (!ignoreError) failures++;\n\t}\n}\n\nif (failures > 0) {\n\tconst failed = results.filter((r) => !r.pass && !r.ignored).map((r) => r.step + (r.error ? ' (' + r.error + ')' : '')).join('; ');\n\tthrow new Error(failures + ' step(s) failed: ' + failed);\n}\nreturn [{ json: { failures, totalCounted: steps.filter(([, ignore]) => !ignore).length, results } }];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -335,7 +416,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Pick the personal drive from the Space:List output, then expose the\n// fixed test inputs (root folder + test file name). All downstream nodes\n// reference these via $(\"Config\").first().json.\nconst inputs = $input.all().map((it) => it.json);\n// If the upstream Space:List had continueOnFail enabled and the call to\n// OpenCloud failed, n8n substitutes { error, errorDescription } for the\n// drive list. Surface that root cause instead of stringifying nulls.\nconst upstream = inputs.find((i) => i && typeof i.error === \"string\");\nif (upstream) {\n\tconst detail = upstream.errorDescription ? upstream.error + \" \\u2014 \" + upstream.errorDescription : upstream.error;\n\tthrow new Error(\"Cannot resolve a personal drive: the upstream Resolve-space step failed: \" + detail);\n}\nconst personal = inputs.find((d) => d && d.driveType === \"personal\");\nif (!personal) {\n\tconst summary = inputs.length === 0 ? \"(no drives returned)\" : inputs.map((d) => (d && d.name ? d.name : \"<no-name>\") + \"/\" + (d && d.driveType ? d.driveType : \"<no-type>\")).join(\", \");\n\tthrow new Error(\"No personal drive in /me/drives response. Drives received: \" + summary + \". Verify the credential authenticates as a user that has a personal drive provisioned.\");\n}\nreturn [{ json: { spaceId: personal.id, rootFolder: \"/n8n-smoke\", fileName: \"hello.txt\" } }];"
+        "jsCode": "// Pick the personal drive from the Space:List output, then expose the\n// fixed test inputs (root folder + test file name). All downstream nodes\n// reference these via $(\"Config\").first().json.\nconst inputs = $input.all().map((it) => it.json);\n// If the upstream Space:List had continueOnFail enabled and the call to\n// OpenCloud failed, n8n substitutes { error, errorDescription } for the\n// drive list. Surface that root cause instead of stringifying nulls.\nconst upstream = inputs.find((i) => i && typeof i.error === \"string\");\nif (upstream) {\n\tconst detail = upstream.errorDescription ? upstream.error + \" \\u2014 \" + upstream.errorDescription : upstream.error;\n\tthrow new Error(\"Cannot resolve a personal drive: the upstream Resolve-space step failed: \" + detail);\n}\nconst personal = inputs.find((d) => d && d.driveType === \"personal\");\nif (!personal) {\n\tconst summary = inputs.length === 0 ? \"(no drives returned)\" : inputs.map((d) => (d && d.name ? d.name : \"<no-name>\") + \"/\" + (d && d.driveType ? d.driveType : \"<no-type>\")).join(\", \");\n\tthrow new Error(\"No personal drive in /me/drives response. Drives received: \" + summary + \". Verify the credential authenticates as a user that has a personal drive provisioned.\");\n}\nconst _base = personal.webUrl || (personal.root && personal.root.webDavUrl) || \"\";\nconst _m = _base.match(/^https?:\\/\\/[^/]+/);\nconst serverUrl = _m ? _m[0] : \"\";\nreturn [{ json: { spaceId: personal.id, rootFolder: \"/n8n-smoke\", fileName: \"hello.txt\", serverUrl } }];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -433,6 +514,28 @@
     {
       "parameters": {
         "resource": "user",
+        "operation": "getAll"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        750
+      ],
+      "id": "user-getall",
+      "name": "U5. Get many users",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "Lists all users. Returns one item per user; the created smoke user should be present before U4 deletes it.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "user",
         "operation": "delete",
         "userId": "={{ $('U1. Create user').first().json.id }}"
       },
@@ -450,6 +553,566 @@
           "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID"
         }
       }
+    },
+    {
+      "parameters": {
+        "jsCode": "const stamp = Date.now().toString(36);\nreturn [{ json: { spaceName: `n8n-smoke-proj-${stamp}` } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        900
+      ],
+      "id": "proj-name",
+      "name": "P0. Project space name",
+      "notesInFlow": true,
+      "notes": "Generates a unique project-space name per run so re-runs don't collide."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.serverUrl }}/graph/v1.0/drives",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openCloudApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ name: $('P0. Project space name').first().json.spaceName, driveType: 'project', description: 'n8n smoke project space' }) }}",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1000,
+        900
+      ],
+      "id": "proj-create",
+      "name": "P1. Create project space",
+      "notesInFlow": true,
+      "notes": "The OpenCloud node has no space:create operation, so this fixture step uses the generic HTTP Request node with the SAME OpenCloud credential (Libre Graph createDrive). Requires a Space Admin / admin credential. No continueOnFail: if space creation fails the whole branch is meaningless, so it halts loudly.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "create",
+        "space": "={{ $('P1. Create project space').first().json.id }}",
+        "path": "",
+        "name": "docs"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        900
+      ],
+      "id": "proj-folder-create",
+      "name": "P2. Create folder in project",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
+        "space": "={{ $('P1. Create project space').first().json.id }}",
+        "path": "/docs",
+        "name": "hello.txt",
+        "binaryDataUpload": false,
+        "fileContent": "hello from n8n smoke — project space\n"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        900
+      ],
+      "id": "proj-file-upload",
+      "name": "P3. Upload file to project",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "copy",
+        "space": "={{ $('P1. Create project space').first().json.id }}",
+        "path": "/docs/hello.txt",
+        "destSpace": "",
+        "destParentPath": "",
+        "destName": "hello-copy.txt"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        900
+      ],
+      "id": "proj-file-copy",
+      "name": "P4. Copy file in project",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "share",
+        "space": "={{ $('P1. Create project space').first().json.id }}",
+        "path": "/docs/hello.txt",
+        "recipientType": "publicLink",
+        "linkType": "view",
+        "password": "",
+        "expirationDateTime": ""
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1800,
+        900
+      ],
+      "id": "proj-file-share",
+      "name": "P5. Share file link (project)",
+      "continueOnFail": true,
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "space",
+        "operation": "share",
+        "space": "={{ $('P1. Create project space').first().json.id }}",
+        "recipientType": "publicLink",
+        "linkType": "view",
+        "password": "Sp4ce!Link123",
+        "expirationDateTime": ""
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        900
+      ],
+      "id": "proj-space-share",
+      "name": "P6. Share project space link",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "This is what a personal drive cannot do (\"unsupported space type\"). A project space supports public links on its root, so this exercises space:share end-to-end.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "user",
+        "operation": "create",
+        "userName": "={{ 'rcpt-' + $('P0. Project space name').first().json.spaceName }}",
+        "displayName": "n8n Smoke Recipient",
+        "email": "={{ 'rcpt-' + $('P0. Project space name').first().json.spaceName + '@example.com' }}",
+        "password": "Rcpt!Test123"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        1100
+      ],
+      "id": "proj-rcpt-create",
+      "name": "P6a. Create recipient user",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "A throwaway user to receive the user-shares below (invite recipient). Deleted again in P6e.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "share",
+        "space": "={{ $('P1. Create project space').first().json.id }}",
+        "path": "/docs/hello.txt",
+        "recipientType": "user",
+        "recipientId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('P6a. Create recipient user').first().json.id }}"
+        },
+        "role": "b1e2218d-eef8-4d4c-b82d-0f1a1b48f3b5",
+        "expirationDateTime": ""
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        1100
+      ],
+      "id": "proj-file-share-user",
+      "name": "P6b. Share file with user",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "file:share to a specific user (invite), role = Can view. Distinct from the public-link path in P5.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "share",
+        "space": "={{ $('P1. Create project space').first().json.id }}",
+        "path": "/docs",
+        "recipientType": "user",
+        "recipientId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('P6a. Create recipient user').first().json.id }}"
+        },
+        "role": "b1e2218d-eef8-4d4c-b82d-0f1a1b48f3b5",
+        "expirationDateTime": ""
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        1100
+      ],
+      "id": "proj-folder-share-user",
+      "name": "P6c. Share folder with user",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "folder:share to a specific user (invite), role = Can view.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "space",
+        "operation": "share",
+        "space": "={{ $('P1. Create project space').first().json.id }}",
+        "recipientType": "user",
+        "recipientId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('P6a. Create recipient user').first().json.id }}"
+        },
+        "role": "a8d5fe5e-96e3-418d-825b-534dbdf22b99",
+        "expirationDateTime": ""
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1800,
+        1100
+      ],
+      "id": "proj-space-share-user",
+      "name": "P6d. Share space with user",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "space:share to a specific user (invite) as a project-space member, role = Can view. (Group sharing is not exercised: the node has no group:create to make a throwaway group.)",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "user",
+        "operation": "delete",
+        "userId": "={{ $('P6a. Create recipient user').first().json.id }}"
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        2000,
+        1100
+      ],
+      "id": "proj-rcpt-delete",
+      "name": "P6e. Delete recipient user",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "Cleanup: removes the throwaway recipient user created in P6a.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $('Config').first().json.serverUrl }}/graph/v1.0/groups",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openCloudApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ displayName: 'grp-' + $('P0. Project space name').first().json.spaceName }) }}",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        1300
+      ],
+      "id": "proj-group-create",
+      "name": "G1. Create group",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "The OpenCloud node has no group:create operation, so this fixture step uses the HTTP Request node with the same credential (Libre Graph createGroup). Admin only. Deleted again in G4.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "share",
+        "space": "={{ $('P1. Create project space').first().json.id }}",
+        "path": "/docs/hello.txt",
+        "recipientType": "group",
+        "recipientId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('G1. Create group').first().json.id }}"
+        },
+        "role": "b1e2218d-eef8-4d4c-b82d-0f1a1b48f3b5",
+        "expirationDateTime": ""
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1300,
+        1300
+      ],
+      "id": "proj-file-share-group",
+      "name": "G1a. Share file with group",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "file:share to a group (invite), role = Can view.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "operation": "share",
+        "space": "={{ $('P1. Create project space').first().json.id }}",
+        "path": "/docs",
+        "recipientType": "group",
+        "recipientId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('G1. Create group').first().json.id }}"
+        },
+        "role": "b1e2218d-eef8-4d4c-b82d-0f1a1b48f3b5",
+        "expirationDateTime": ""
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1400,
+        1300
+      ],
+      "id": "proj-folder-share-group",
+      "name": "G2. Share folder with group",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "folder:share to a group (invite), role = Can view.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "space",
+        "operation": "share",
+        "space": "={{ $('P1. Create project space').first().json.id }}",
+        "recipientType": "group",
+        "recipientId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $('G1. Create group').first().json.id }}"
+        },
+        "role": "a8d5fe5e-96e3-418d-825b-534dbdf22b99",
+        "expirationDateTime": ""
+      },
+      "type": "@opencloud-eu/n8n-nodes-opencloud.openCloud",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        1300
+      ],
+      "id": "proj-space-share-group",
+      "name": "G3. Share space with group",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "space:share to a group (invite) as a project-space member, role = Can view.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $('Config').first().json.serverUrl }}/graph/v1.0/groups/{{ $('G1. Create group').first().json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openCloudApi",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1800,
+        1300
+      ],
+      "id": "proj-group-delete",
+      "name": "G4. Delete group",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "Cleanup: removes the throwaway group created in G1.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $('Config').first().json.serverUrl }}/graph/v1.0/drives/{{ $('P1. Create project space').first().json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openCloudApi",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        900
+      ],
+      "id": "proj-disable",
+      "name": "P7a. Disable project space",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "Cleanup step 1: OpenCloud requires a space to be disabled before it can be purged. A plain DELETE disables (soft-deletes) it.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $('Config').first().json.serverUrl }}/graph/v1.0/drives/{{ $('P1. Create project space').first().json.id }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openCloudApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Purge",
+              "value": "T"
+            }
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2400,
+        900
+      ],
+      "id": "proj-purge",
+      "name": "P7b. Purge project space",
+      "continueOnFail": true,
+      "notesInFlow": true,
+      "notes": "Cleanup step 2: a DELETE with the 'Purge: T' header permanently removes the disabled space (a plain DELETE only disables). Best-effort so a cleanup hiccup doesn't mask a real test failure.",
+      "credentials": {
+        "openCloudApi": {
+          "id": "REPLACE_WITH_YOUR_CREDENTIAL_ID",
+          "name": "OpenCloud"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const steps=['P2. Create folder in project','P3. Upload file to project','P4. Copy file in project','P5. Share file link (project)','P6. Share project space link','P6a. Create recipient user','P6b. Share file with user','P6c. Share folder with user','P6d. Share space with user','G1. Create group','G1a. Share file with group','G2. Share folder with group','G3. Share space with group'];const results=[];let failures=0;for(const name of steps){let out;try{out=$(name).first()?.json??{};}catch(e){out={error:'no upstream output: '+e.message};}const error=typeof out.error==='string'?out.error:null;const description=typeof out.errorDescription==='string'?out.errorDescription:null;if(error)failures++;results.push({step:name,pass:!error,...(error?{error}:{}),...(description?{errorDescription:description}:{})});}if(failures>0){throw new Error(failures+' project step(s) failed: '+results.filter((r)=>!r.pass).map((r)=>r.step+' ('+r.error+(r.errorDescription?': '+r.errorDescription:'')+')').join('; '));}return [{json:{branch:'project',failures,results}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2600,
+        900
+      ],
+      "id": "proj-verify",
+      "name": "P8. Verify project branch"
     }
   ],
   "connections": {
@@ -474,6 +1137,220 @@
         [
           {
             "node": "0. Cleanup any pre-existing /n8n-smoke",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "P0. Project space name",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P0. Project space name": {
+      "main": [
+        [
+          {
+            "node": "P1. Create project space",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P1. Create project space": {
+      "main": [
+        [
+          {
+            "node": "P2. Create folder in project",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P2. Create folder in project": {
+      "main": [
+        [
+          {
+            "node": "P3. Upload file to project",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P3. Upload file to project": {
+      "main": [
+        [
+          {
+            "node": "P4. Copy file in project",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P4. Copy file in project": {
+      "main": [
+        [
+          {
+            "node": "P5. Share file link (project)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P5. Share file link (project)": {
+      "main": [
+        [
+          {
+            "node": "P6. Share project space link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P6. Share project space link": {
+      "main": [
+        [
+          {
+            "node": "P6a. Create recipient user",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P6a. Create recipient user": {
+      "main": [
+        [
+          {
+            "node": "P6b. Share file with user",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P6b. Share file with user": {
+      "main": [
+        [
+          {
+            "node": "P6c. Share folder with user",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P6c. Share folder with user": {
+      "main": [
+        [
+          {
+            "node": "P6d. Share space with user",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P6d. Share space with user": {
+      "main": [
+        [
+          {
+            "node": "P6e. Delete recipient user",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P6e. Delete recipient user": {
+      "main": [
+        [
+          {
+            "node": "G1. Create group",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "G1. Create group": {
+      "main": [
+        [
+          {
+            "node": "G1a. Share file with group",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "G1a. Share file with group": {
+      "main": [
+        [
+          {
+            "node": "G2. Share folder with group",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "G2. Share folder with group": {
+      "main": [
+        [
+          {
+            "node": "G3. Share space with group",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "G3. Share space with group": {
+      "main": [
+        [
+          {
+            "node": "G4. Delete group",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "G4. Delete group": {
+      "main": [
+        [
+          {
+            "node": "P7a. Disable project space",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P7a. Disable project space": {
+      "main": [
+        [
+          {
+            "node": "P7b. Purge project space",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "P7b. Purge project space": {
+      "main": [
+        [
+          {
+            "node": "P8. Verify project branch",
             "type": "main",
             "index": 0
           }
@@ -569,6 +1446,39 @@
       ]
     },
     "8. Rename \u2192 renamed.txt": {
+      "main": [
+        [
+          {
+            "node": "8a. Copy folder \u2192 archive-copy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8a. Copy folder \u2192 archive-copy": {
+      "main": [
+        [
+          {
+            "node": "8b. Move folder \u2192 archive-moved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8b. Move folder \u2192 archive-moved": {
+      "main": [
+        [
+          {
+            "node": "8c. Share folder link",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "8c. Share folder link": {
       "main": [
         [
           {

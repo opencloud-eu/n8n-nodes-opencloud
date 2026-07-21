@@ -29,9 +29,12 @@ if [[ ! -f "$INPUT" ]]; then
 	exit 1
 fi
 
+# Patch any node that references the openCloudApi credential — both the
+# OpenCloud node and the generic HTTP Request nodes used to create/delete a
+# project space (which reuse the same credential via predefinedCredentialType).
 jq --arg id "$CRED_ID" '
 	.nodes |= map(
-		if .type == "@opencloud-eu/n8n-nodes-opencloud.openCloud" then
+		if (.credentials.openCloudApi != null) then
 			.credentials.openCloudApi.id = $id
 		else . end
 	)

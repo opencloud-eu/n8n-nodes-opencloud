@@ -45,8 +45,9 @@ services:
         set -e
         EXTRA=/home/node/parcel-watcher-musl
         PARCEL_VERSION=$$(node -p "require('/usr/local/lib/node_modules/n8n/node_modules/@parcel/watcher/package.json').version")
+        ARCH=$$(node -p "process.arch")
         mkdir -p "$$EXTRA"
-        npm install --prefix "$$EXTRA" --no-save --no-audit --no-fund "@parcel/watcher-linux-x64-musl@$$PARCEL_VERSION"
+        npm install --prefix "$$EXTRA" --no-save --no-audit --no-fund "@parcel/watcher-linux-$$ARCH-musl@$$PARCEL_VERSION"
         export NODE_PATH="$$EXTRA/node_modules:$$NODE_PATH"
         exec /docker-entrypoint.sh "$$@"
       - --
