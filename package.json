@@ -19,6 +19,9 @@
 		"type": "git",
 		"url": "https://github.com/opencloud-eu/n8n-nodes-opencloud.git"
 	},
+	"publishConfig": {
+		"access": "public"
+	},
 	"scripts": {
 		"build": "node dev/build.mjs",
 		"build:w": "node dev/build.mjs && tsc --watch --preserveWatchOutput",

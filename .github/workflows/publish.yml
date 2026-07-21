@@ -56,16 +56,15 @@
 
 name: Publish
 
-# Disabled until the package is ready for its first npm release.
-# Re-enable by uncommenting the `push.tags` trigger below and removing
-# `workflow_dispatch:` (or keeping it as a manual escape hatch).
+# Triggers on version-tag pushes (created by `pnpm release` locally).
+# `workflow_dispatch` is kept as a manual escape hatch.
 on:
   workflow_dispatch:
-  # push:
-  #   tags:
-  #     # Matches 0.1.0, 1.2.3, 2.0.0-rc.1, etc.
-  #     # See "TAG CONVENTION" above if you prefer tags with a "v" prefix.
-  #     - '*.*.*'
+  push:
+    tags:
+      # Matches 0.1.0, 1.2.3, 2.0.0-rc.1, etc.
+      # See "TAG CONVENTION" above if you prefer tags with a "v" prefix.
+      - 'v*.*.*'
 
 jobs:
   publish:
