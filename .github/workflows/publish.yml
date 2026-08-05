@@ -101,6 +101,15 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Scan
+        # Reproduces the n8n creators gate (@n8n/scan-community-package) on the
+        # exact commit about to be published, so ESLint violations that only
+        # that scan enforces block the release instead of surfacing after it.
+        # Builds first so the packed-dist leg has compiled output to lint.
+        run: |
+          pnpm build
+          pnpm scan
+
       - name: Release
         # Publishes to npm with a provenance attestation (requires id-token: write above).
         # Lint and build run automatically as part of `n8n-node release`.
