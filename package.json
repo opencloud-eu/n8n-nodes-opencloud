@@ -1,6 +1,6 @@
 {
 	"name": "@opencloud-eu/n8n-nodes-opencloud",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "n8n community node for OpenCloud — file/folder/share operations against the OpenCloud API",
 	"license": "MIT",
 	"homepage": "https://github.com/opencloud-eu/n8n-nodes-opencloud",
