@@ -1,6 +1,6 @@
 /* eslint-disable @n8n/community-nodes/no-restricted-imports */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { OpenCloud } from '../OpenCloud.node';
+import { OpenCloud } from '../../nodes/OpenCloud/OpenCloud.node';
 import {
 	makeExecuteFunctions,
 	makeLoadOptionsFunctions,

@@ -44,6 +44,15 @@ steps:
     commands:
       - pnpm build
 
+  # Reproduces the n8n creators gate (@n8n/scan-community-package) so its
+  # ESLint ruleset (allowInlineConfig:false, the {nodes,credentials} +
+  # package.json glob, the packed-dist .js leg) fails the PR before publish.
+  # Runs after build so the dist leg has compiled output to lint.
+  - name: scan
+    image: *node_image
+    commands:
+      - pnpm scan
+
   # ── e2e ───────────────────────────────────────────────────────────────────
 
   - name: opencloud

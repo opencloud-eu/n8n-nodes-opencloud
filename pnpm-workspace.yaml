@@ -1,5 +1,10 @@
 autoInstallPeers: true
 shamefullyHoist: true
+# @n8n/scan-community-package (devDep, used by `pnpm scan`) pins typescript@7
+# beta, which crashes @typescript-eslint's estree parser at runtime. Force the
+# whole tree onto the 5.9.x we already build with.
+overrides:
+  typescript: 5.9.3
 allowBuilds:
   esbuild: true
   eslint-plugin-n8n-nodes-base: true

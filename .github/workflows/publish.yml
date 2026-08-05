@@ -101,6 +101,15 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Scan
+        # Reproduces the n8n creators gate (@n8n/scan-community-package) on the
+        # exact commit about to be published, so ESLint violations that only
+        # that scan enforces block the release instead of surfacing after it.
+        # Builds first so the packed-dist leg has compiled output to lint.
+        run: |
+          pnpm build
+          pnpm scan
+
       - name: Release
         # Publishes to npm with a provenance attestation (requires id-token: write above).
         # Lint and build run automatically as part of `n8n-node release`.
@@ -111,3 +120,26 @@ jobs:
         run: pnpm release
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify published package
+        # Post-publish smoke check: run the REAL creators scan (latest, via npx)
+        # against the version we just published. It's authoritative where the
+        # pre-publish `pnpm scan` can't be — it verifies the npm provenance
+        # attestation and lints the attested GitHub source end-to-end, exactly
+        # like n8n's portal, and picks up any newer scanner rules. It runs after
+        # publish, so it can only alert (a red run means "cut a fix release"),
+        # not block. Retries because the artifact and its attestation take a
+        # moment to propagate on the registry.
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          pkg="@opencloud-eu/n8n-nodes-opencloud@${version}"
+          for attempt in $(seq 1 8); do
+            echo "Attempt ${attempt}: scanning ${pkg}"
+            if npx --yes @n8n/scan-community-package "${pkg}"; then
+              exit 0
+            fi
+            echo "Failed or not yet propagated; retrying in 30s..."
+            sleep 30
+          done
+          echo "::error::Published ${pkg} did not pass the creators scan"
+          exit 1
