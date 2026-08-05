@@ -141,12 +141,12 @@ jobs:
           for attempt in $(seq 1 10); do
             echo "Attempt ${attempt}: scanning ${pkg}"
             output="$(npx --yes @n8n/scan-community-package "${pkg}" 2>&1)" || true
-            echo "${output}"
-            if grep -q "has passed all security checks" <<<"${output}"; then
+            printf '%s\n' "${output}"
+            if grep -Fq "has passed all security checks" <<<"${output}"; then
               echo "Published ${pkg} passed the creators scan."
               exit 0
             fi
-            if grep -q "ESLint violations found" <<<"${output}"; then
+            if grep -Fq "ESLint violations found" <<<"${output}"; then
               echo "::error::Published ${pkg} failed the creators scan (ESLint violations)"
               exit 1
             fi
