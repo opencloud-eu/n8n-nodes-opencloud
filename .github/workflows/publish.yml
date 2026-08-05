@@ -128,18 +128,30 @@ jobs:
         # attestation and lints the attested GitHub source end-to-end, exactly
         # like n8n's portal, and picks up any newer scanner rules. It runs after
         # publish, so it can only alert (a red run means "cut a fix release"),
-        # not block. Retries because the artifact and its attestation take a
-        # moment to propagate on the registry.
+        # not block.
+        #
+        # The CLI exits 0 even on failure, so we key off its output, not the exit
+        # code: pass on "has passed all security checks", fail fast on genuine
+        # "ESLint violations found", and retry only the transient case where the
+        # freshly published artifact / attested source has not propagated to the
+        # registry and codeload yet.
         run: |
           version="$(node -p "require('./package.json').version")"
           pkg="@opencloud-eu/n8n-nodes-opencloud@${version}"
-          for attempt in $(seq 1 8); do
+          for attempt in $(seq 1 10); do
             echo "Attempt ${attempt}: scanning ${pkg}"
-            if npx --yes @n8n/scan-community-package "${pkg}"; then
+            output="$(npx --yes @n8n/scan-community-package "${pkg}" 2>&1)" || true
+            echo "${output}"
+            if grep -q "has passed all security checks" <<<"${output}"; then
+              echo "Published ${pkg} passed the creators scan."
               exit 0
             fi
-            echo "Failed or not yet propagated; retrying in 30s..."
+            if grep -q "ESLint violations found" <<<"${output}"; then
+              echo "::error::Published ${pkg} failed the creators scan (ESLint violations)"
+              exit 1
+            fi
+            echo "Artifact/source not propagated yet; retrying in 30s..."
             sleep 30
           done
-          echo "::error::Published ${pkg} did not pass the creators scan"
+          echo "::error::Published ${pkg} could not be scanned after retries (source still unreachable?)"
           exit 1
