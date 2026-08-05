@@ -5,8 +5,9 @@ import type {
 	IHttpRequestMethods,
 	IHttpRequestOptions,
 	ILoadOptionsFunctions,
+	JsonObject,
 } from 'n8n-workflow';
-import { NodeOperationError } from 'n8n-workflow';
+import { NodeApiError, NodeOperationError } from 'n8n-workflow';
 
 // Syscall / network error codes that mean "the request never got an HTTP
 // reply" — DNS, refused, timeout, etc. We catch these specifically so the
@@ -143,12 +144,11 @@ export async function openCloudApiRequest<T = unknown>(
 				},
 			);
 		}
-		// Preserve the helper's original error (httpCode, message) so call sites
-		// can branch on the status and wrap with their own semantic NodeApiError /
-		// NodeOperationError. Wrapping here in NodeApiError would short-circuit
-		// re-wrapping at the call site (its constructor returns the existing
-		// instance untouched).
-		// eslint-disable-next-line @n8n/community-nodes/require-node-api-error
-		throw error;
+		// Wrap in NodeApiError so the surfaced error carries httpCode and a
+		// status-derived message. NodeApiError's constructor copies httpCode from
+		// the underlying error, so call sites can still branch on error.httpCode
+		// (405, 502, 400 password policy) and re-wrapping there is a no-op (its
+		// constructor returns an existing NodeApiError untouched).
+		throw new NodeApiError(this.getNode(), error as JsonObject);
 	}
 }

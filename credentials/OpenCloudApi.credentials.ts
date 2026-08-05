@@ -12,7 +12,10 @@ export class OpenCloudApi implements ICredentialType {
 
 	displayName = 'OpenCloud API';
 
-	icon: Icon = 'file:../icons/opencloud.svg';
+	icon: Icon = {
+		light: 'file:../icons/opencloud.svg',
+		dark: 'file:../icons/opencloud.dark.svg',
+	};
 
 	documentationUrl = 'https://docs.opencloud.eu/';
 

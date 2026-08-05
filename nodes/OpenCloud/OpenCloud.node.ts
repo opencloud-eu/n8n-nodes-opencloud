@@ -115,7 +115,7 @@ export class OpenCloud implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'OpenCloud',
 		name: 'openCloud',
-		icon: 'file:opencloud.svg',
+		icon: { light: 'file:opencloud.svg', dark: 'file:opencloud.dark.svg' },
 		group: ['input'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["resource"]}}',
