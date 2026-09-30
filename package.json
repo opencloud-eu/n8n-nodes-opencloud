@@ -58,7 +58,7 @@
 		"axios": "^1.7.7",
 		"eslint": "9.39.4",
 		"fast-glob": "^3.3.3",
-		"nock": "^13.5.4",
+		"nock": "^14.0.0",
 		"prettier": "3.8.3",
 		"release-it": "20.2.0",
 		"rimraf": "^6.1.3",
