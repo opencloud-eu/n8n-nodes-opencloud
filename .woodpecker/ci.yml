@@ -13,7 +13,7 @@ when:
 
 variables:
   - &node_image 'quay.io/opencloudeu/nodejs-ci:24@sha256:efb3ac3e7e7180aa24fec6f6811d7a59385798676a6a7081dc092faa0800951b'
-  - &oc_image 'opencloudeu/opencloud-rolling:9.0.0@sha256:bd57f039d0dd3df510fb25f178beefdf0b1f049097285feead607824460e6506'
+  - &oc_image 'opencloudeu/opencloud-rolling:9.1.0@sha256:f902f3cb5c247e3780dc133476c4c4f8d3377a638f15734d1d926c5f011c1fa7'
   - &minio_mc_image 'quay.io/opencloudeu/minio-mc-ci:1.1'
 
 steps:
