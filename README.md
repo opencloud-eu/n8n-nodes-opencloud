@@ -1,10 +1,13 @@
 # @opencloud-eu/n8n-nodes-opencloud
 
-> n8n community node for [OpenCloud](https://opencloud.eu/) — files, folders
-> and shares against the OpenCloud API.
+[![npm](https://img.shields.io/npm/v/@opencloud-eu/n8n-nodes-opencloud)](https://www.npmjs.com/package/@opencloud-eu/n8n-nodes-opencloud)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE.md)
+
+> n8n community node for [OpenCloud](https://opencloud.eu/) — files, folders,
+> spaces, users and sharing against the OpenCloud API.
 
 Built on top of [Libre Graph](https://github.com/opencloud-eu/libre-graph-api)
-(metadata, sharing, drive enumeration) and OpenCloud WebDAV (content I/O,
+(metadata, sharing, drive/user enumeration) and OpenCloud WebDAV (content I/O,
 copy, move, delete).
 
 ![Smoke workflow in the n8n editor — every operation in one chain](docs/smoke-workflow.png)
@@ -15,10 +18,14 @@ copy, move, delete).
 
 | Resource | Operations |
 | --- | --- |
-| **Space** | List |
-| **File** | Copy · Delete · Download · Move · Share · Upload |
-| **Folder** | Copy · Create · Delete · List · Move · Share |
-| **User** | Create · Delete · Get · Get Many · Update *(admin only)* |
+| **File** | Upload · Download · Copy · Move · Delete · Share |
+| **Folder** | Create · List · Copy · Move · Delete · Share |
+| **Space** | List · Share |
+| **User** | Create · Get · Get Many · Update · Delete *(admin only)* |
+
+`Share` (files, folders and spaces) supports three recipient types: a **public
+link** (with optional password and expiry), an invited **user**, or an invited
+**group** — each with a role. Space sharing applies to project spaces.
 
 ## Credentials
 
@@ -34,29 +41,18 @@ passwords work for quick tests.
 
 ## Install
 
-> **Status:** not yet published to npm. Once published, this will be installable
-> from n8n's UI: **Settings → Community Nodes → Install →
-> `@opencloud-eu/n8n-nodes-opencloud`**.
+In n8n: **Settings → Community Nodes → Install**, enter
+`@opencloud-eu/n8n-nodes-opencloud`, accept the risk notice and click **Install**.
 
-For now, install from source:
+![Install the community node](docs/install-community-node.png)
 
-```bash
-git clone https://github.com/opencloud-eu/n8n-nodes-opencloud.git
-cd n8n-nodes-opencloud
-pnpm install
-pnpm build
+It then shows up under **Community Nodes**; add it in the editor by searching
+**OpenCloud**.
 
-# Then either:
-#   a) symlink into your n8n custom-nodes directory
-mkdir -p ~/.n8n/custom
-ln -s "$(pwd)" ~/.n8n/custom/n8n-nodes-opencloud
+![Installed community node](docs/community-nodes-installed.png)
 
-#   b) or pack and install via the n8n UI
-pnpm pack
-# Settings → Community Nodes → Install → upload the .tgz
-```
-
-Restart n8n after either step.
+> Available on **self-hosted** n8n. On n8n Cloud, community nodes must be
+> verified — this node is not yet listed as verified.
 
 ---
 
